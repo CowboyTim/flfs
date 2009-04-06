@@ -12,6 +12,7 @@ ok=0
 function my_err (){
     if [ $ok == 0 ]; then
         cd $here
+        echo "***ERROR***"
         fusermount -u $mntpoint
         exit 1
     fi
@@ -107,6 +108,8 @@ fi
 mkdir ll/kk
 rmdir yy
 cd $here
+
+touch $mntpoint/aaf
 
 
 fusermount -u $mntpoint

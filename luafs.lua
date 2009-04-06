@@ -61,11 +61,11 @@ local fs_tree = {
 local luafs   = {
 
 rmdir = function(self, path)
-    print("rmdir():"..path..",nlink:"..fs_meta[path].nlink)
-    if fs_meta[path].nlink > 2 then
+    print("rmdir():"..path..",n:".. # fs_tree[path])
+    if next(fs_tree[path]) then
         return EEXISTS
     end
-        
+
     local parent,dir = path:splitpath()
     fs_meta[parent].nlink = fs_meta[parent].nlink - 1
     fs_tree[parent][dir] = nil
@@ -114,7 +114,15 @@ releasedir = function(self, path, dirent)
 end,
 
 open = function(self, path, mode)
-    print("open()")
+    print("open():"..path)
+end,
+
+create = function(self, path, mode, flag)
+    print("create():"..path)
+    local parent,file = path:splitpath()
+    fs_meta[path] = new_meta(mode, S_IFREG, path)
+    fs_tree[parent][file] = fs_meta[path]
+    return 0, nil
 end,
 
 read = function(self, path, size, offset, obj)
@@ -128,11 +136,8 @@ write = function(self, path, buf, offset, obj)
 end,
 
 release = function(self, path, obj)
-    print("release()")
-end,
-
-create = function(self, path, mode, flag, ...)
-    print("create()")
+    print("release():"..path)
+    obj.f = nil
     return 0
 end,
 
@@ -237,7 +242,9 @@ unlink = function(self, path)
 end,
 
 mknod = function(self, path, mode, rdev)
-    print("mknod()")
+    -- only called for non-symlinks, non-directories, non-files and links.
+    -- Those are handled by symlink, mkdir, create, link
+    print("mknod():"..path)
     return 0, nil
 end,
 
