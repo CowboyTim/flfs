@@ -34,7 +34,7 @@ end
 
 local uid,gid,pid,puid,pgid = fuse.context()
 
-function new_meta(mode, otype)
+function new_meta(mode, otype, mypath)
     return {
         xattr = {[-1] = true},
         mode  = mode + otype,
@@ -46,40 +46,75 @@ function new_meta(mode, otype)
         size  = 0,
         atime = os.time(),
         mtime = os.time(),
-        ctime = os.time()
+        ctime = os.time(),
+        path  = mypath
     }
 end
 
 local fs_meta = {
-    ["/"] = new_meta(mk_mode(7,5,5), S_IFDIR)
+    ["/"] = new_meta(mk_mode(7,5,5), S_IFDIR, '/')
 }
-local fs_tree = {["/"] = {}}
+local fs_tree = {
+    ["/"] = {}
+}
 
 local luafs   = {
 
-opendir = function(self, path)
-    print("opendir()")
-    local entity = fs_meta[path]
-    if entity then
-        return 0
-    else
-        return ENOENT
+rmdir = function(self, path)
+    print("rmdir():"..path..",nlink:"..fs_meta[path].nlink)
+    if fs_meta[path].nlink > 2 then
+        return EEXISTS
     end
-end,
-
-readdir = function(self, path, offset, dirent)
-    print("readdir()")
-    return 0, nil
-end,
-
-releasedir = function(self, path, dirent)
-    print("releasedir()")
+        
+    local parent,dir = path:splitpath()
+    fs_meta[parent].nlink = fs_meta[parent].nlink - 1
+    fs_tree[parent][dir] = nil
+    fs_meta[path] = nil
+    fs_tree[path] = nil
     return 0
 end,
 
-mknod = function(self, path, mode, rdev)
-    print("mknod()")
-    return 0, nil
+mkdir = function(self, path, mode)
+    print('mkdir():'..path)
+    local parent,subdir = path:splitpath()
+    print("parentdir:"..parent)
+    fs_meta[parent].nlink = fs_meta[parent].nlink + 1
+    fs_meta[path] = new_meta(mode,S_IFDIR,path)
+
+    fs_tree[path] = {}
+    fs_tree[parent][subdir] = fs_meta[path]
+
+    print("made dir, mode:"..fs_meta[path].mode)
+    return 0
+end,
+
+opendir = function(self, path)
+    print("opendir():"..path)
+    return 0, { t=fs_tree[path], k=nil }
+end,
+
+readdir = function(self, path, offset, dir_fh)
+    print("readdir():"..path..",offset:"..offset)
+    local dir_ent, dir_ent_meta = next(dir_fh.t, dir_fh.k)
+    if dir_ent == nil then
+        return 0, {}
+    end
+    dir_fh.k = dir_ent
+    print("readdir(),v:"..dir_ent..",meta_path:"..dir_ent_meta.path)
+    local n = fs_meta[dir_ent_meta.path]
+    return 0, {{d_name=dir_ent, ino=n.ino, d_type=n.mode, offset=offset + 1}}
+end,
+
+releasedir = function(self, path, dirent)
+    print("releasedir():"..path)
+    dirent.k = nil
+    dirent.t = nil
+    -- eventually the last reference to it will disappear
+    return 0
+end,
+
+open = function(self, path, mode)
+    print("open()")
 end,
 
 read = function(self, path, size, offset, obj)
@@ -92,34 +127,8 @@ write = function(self, path, buf, offset, obj)
     return nil
 end,
 
-open = function(self, path, mode)
-    print("open()")
-end,
-
 release = function(self, path, obj)
     print("release()")
-end,
-
-rmdir = function(self, path)
-    print("rmdir():"..path..",nlink:"..fs_meta[path].nlink)
-    if fs_meta[path].nlink > 2 then
-        return EEXISTS
-    end
-        
-    local parent,dir = path:splitpath()
-    fs_meta[parent].nlink = fs_meta[parent].nlink - 1
-    fs_meta[path] = nil
-    return 0
-end,
-
-mkdir = function(self, path, mode)
-    print('mkdir():'..path)
-    local parent,subdir = path:splitpath()
-    print("parentdir:"..parent)
-    fs_meta[parent].nlink = fs_meta[parent].nlink + 1
-    fs_meta[path] = new_meta(mode,S_IFDIR)
-    print("made dir, mode:"..fs_meta[path].mode)
-    return 0
 end,
 
 create = function(self, path, mode, flag, ...)
@@ -155,15 +164,40 @@ symlink = function(self, from, to)
 end,
 
 rename = function(self, from, to)
-    print("rename()")
+    print("rename():from:"..from..",to:"..to)
     if from == to then return 0 end
 
     local entity = fs_meta[from]
     if entity then
+        -- rename main node
         fs_meta[to]   = fs_meta[from]
         fs_tree[to]   = fs_tree[from]
         fs_meta[from] = nil
         fs_tree[from] = nil
+
+        fs_meta[to].path = to
+
+        -- rename both parent's references to us
+        local p,e = to:splitpath()
+        fs_tree[p][e] = fs_meta[to]
+        p,e = from:splitpath()
+        fs_tree[p][e] = nil
+
+        -- rename all decendants, maybe not such a good idea to use this
+        -- mechanism, but don't forget, how many times does one rename e.g.
+        -- /usr and such.. ;-). for a plain file (or empty subdir), this is for
+        -- isn't even executed (looped actually)
+        --
+        for sub in pairs(fs_tree[to]) do
+            ts= to   .. "/" .. sub
+            fs= from .. "/" .. sub
+            print("r:"..sub..",to:"..ts..",from:"..fs)
+            fs_tree[ts] = fs_tree[fs]
+            fs_meta[ts] = fs_meta[fs]
+            fs_tree[fs] = nil
+            fs_meta[fs] = nil
+        end
+
         return 0
     else
         return ENOENT
@@ -200,6 +234,11 @@ unlink = function(self, path)
     else
         return ENOENT
     end
+end,
+
+mknod = function(self, path, mode, rdev)
+    print("mknod()")
+    return 0, nil
 end,
 
 chown = function(self, path, uid, gid)
