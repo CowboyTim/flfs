@@ -13,7 +13,7 @@ function my_err (){
     if [ $ok == 0 ]; then
         cd $here
         echo "***ERROR***"
-        fusermount -u $mntpoint
+        #fusermount -u $mntpoint
         exit 1
     fi
     ok=0
@@ -111,5 +111,4 @@ cd $here
 
 touch $mntpoint/aaf
 
-
-fusermount -u $mntpoint
+#fusermount -u $mntpoint
