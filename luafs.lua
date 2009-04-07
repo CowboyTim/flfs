@@ -79,11 +79,11 @@ end
 
 local uid,gid,pid,puid,pgid = fuse.context()
 
-function new_meta(mode, mypath)
+function new_meta(mymode, mypath, mytype)
     local t = os.time()
     return {
         xattr = {[-1] = true},
-        mode  = mode,
+        mode  = mymode,
         ino   = 0,
         dev   = 0,
         nlink = 2,
@@ -93,12 +93,13 @@ function new_meta(mode, mypath)
         atime = t,
         mtime = t,
         ctime = t,
-        path  = mypath
+        path  = mypath,
+        etype = mytype
     }
 end
 
 local fs_meta = {
-    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, '/')
+    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, '/', S_IFDIR)
 }
 local fs_tree = {
     ["/"] = {}
@@ -125,7 +126,7 @@ mkdir = function(self, path, mode)
     local parent,subdir = path:splitpath()
     print("parentdir:"..parent)
     fs_meta[parent].nlink = fs_meta[parent].nlink + 1
-    fs_meta[path] = new_meta(mode + S_IFDIR, path)
+    fs_meta[path] = new_meta(mode + S_IFDIR, path, S_IFDIR)
 
     fs_tree[path] = {}
     fs_tree[parent][subdir] = fs_meta[path]
@@ -172,7 +173,7 @@ end,
 create = function(self, path, mode, flag)
     print("create():"..path)
     local parent,file = path:splitpath()
-    fs_meta[path] = new_meta(set_bits(mode, S_IFREG), path)
+    fs_meta[path] = new_meta(set_bits(mode, S_IFREG), path, S_IFREG)
     fs_meta[path].nlink = 1
     fs_tree[parent][file] = fs_meta[path]
     return 0, { f=fs_meta[path] }
@@ -246,14 +247,16 @@ rename = function(self, from, to)
         -- /usr and such.. ;-). for a plain file (or empty subdir), this is for
         -- isn't even executed (looped actually)
         --
-        for sub in pairs(fs_tree[to]) do
-            ts= to   .. "/" .. sub
-            fs= from .. "/" .. sub
-            print("r:"..sub..",to:"..ts..",from:"..fs)
-            fs_tree[ts] = fs_tree[fs]
-            fs_meta[ts] = fs_meta[fs]
-            fs_tree[fs] = nil
-            fs_meta[fs] = nil
+        if fs_meta[to].etype == S_IFDIR then
+            for sub in pairs(fs_tree[to]) do
+                ts= to   .. "/" .. sub
+                fs= from .. "/" .. sub
+                print("r:"..sub..",to:"..ts..",from:"..fs)
+                fs_tree[ts] = fs_tree[fs]
+                fs_meta[ts] = fs_meta[fs]
+                fs_tree[fs] = nil
+                fs_meta[fs] = nil
+            end
         end
 
         return 0

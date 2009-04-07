@@ -110,5 +110,13 @@ rmdir yy
 cd $here
 
 touch $mntpoint/aaf
+mv $mntpoint/aaf $mntpoint/uui
+mv $mntpoint/uui $mntpoint/tt/ll/kk/
+
+touch $mntpoint/tt/pp/ooo
+mkdir $mntpoint/yy
+mv $mntpoint/tt/pp/ooo $mntpoint/yy
+mv $mntpoint/yy/ooo $mntpoint/yy/uuu
+
 
 #fusermount -u $mntpoint
