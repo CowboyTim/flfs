@@ -18,6 +18,51 @@ local ENOSYS   = -38
 local ENOATTR  = -516
 local ENOTSUPP = -524
 
+local tab = {  -- tab[i+1][j+1] = xor(i, j) where i,j in (0-15)
+  {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, },
+  {1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14, },
+
+  {2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, },
+  {3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12, },
+  {4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, },
+  {5, 4, 7, 6, 1, 0, 3, 2, 13, 12, 15, 14, 9, 8, 11, 10, },
+  {6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, },
+  {7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, },
+  {8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, },
+  {9, 8, 11, 10, 13, 12, 15, 14, 1, 0, 3, 2, 5, 4, 7, 6, },
+  {10, 11, 8, 9, 14, 15, 12, 13, 2, 3, 0, 1, 6, 7, 4, 5, },
+  {11, 10, 9, 8, 15, 14, 13, 12, 3, 2, 1, 0, 7, 6, 5, 4, },
+  {12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3, },
+  {13, 12, 15, 14, 9, 8, 11, 10, 5, 4, 7, 6, 1, 0, 3, 2, },
+  {14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1, },
+  {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, },
+}
+
+local function _bxor (a,b)
+    local res, c = 0, 1
+    while a > 0 and b > 0 do
+        local a2, b2 = a % 16, b % 16
+        res = res + tab[a2+1][b2+1]*c
+        a = (a-a2)/16
+        b = (b-b2)/16
+        c = c*16
+    end
+    res = res + a*c + b*c
+    return res
+end
+
+
+local ff = 2^32 - 1
+local function _bnot(a) return ff - a end
+
+local function _band(a,b) return ((a+b) - _bxor(a,b))/2 end
+
+local function _bor(a,b) return ff - _band(ff - a, ff - b) end
+
+local function set_bits(mode, bits)
+    return _bor(mode, bits)
+end
+
 function string:splitpath() 
     local dir,file = self:match("(.-)([^:/\\]*)$") 
     dir = dir:match("(.-)[/\\]?$")
@@ -34,25 +79,26 @@ end
 
 local uid,gid,pid,puid,pgid = fuse.context()
 
-function new_meta(mode, otype, mypath)
+function new_meta(mode, mypath)
+    local t = os.time()
     return {
         xattr = {[-1] = true},
-        mode  = mode + otype,
+        mode  = mode,
         ino   = 0,
         dev   = 0,
         nlink = 2,
         uid   = puid,
         gid   = pgid,
         size  = 0,
-        atime = os.time(),
-        mtime = os.time(),
-        ctime = os.time(),
+        atime = t,
+        mtime = t,
+        ctime = t,
         path  = mypath
     }
 end
 
 local fs_meta = {
-    ["/"] = new_meta(mk_mode(7,5,5), S_IFDIR, '/')
+    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, '/')
 }
 local fs_tree = {
     ["/"] = {}
@@ -79,7 +125,7 @@ mkdir = function(self, path, mode)
     local parent,subdir = path:splitpath()
     print("parentdir:"..parent)
     fs_meta[parent].nlink = fs_meta[parent].nlink + 1
-    fs_meta[path] = new_meta(mode,S_IFDIR,path)
+    fs_meta[path] = new_meta(mode + S_IFDIR, path)
 
     fs_tree[path] = {}
     fs_tree[parent][subdir] = fs_meta[path]
@@ -115,23 +161,30 @@ end,
 
 open = function(self, path, mode)
     print("open():"..path)
+    local entity = fs_meta[path]
+    if entity then
+        return 0, { f=entity }
+    else
+        return ENOENT
+    end
 end,
 
 create = function(self, path, mode, flag)
     print("create():"..path)
     local parent,file = path:splitpath()
-    fs_meta[path] = new_meta(mode, S_IFREG, path)
+    fs_meta[path] = new_meta(set_bits(mode, S_IFREG), path)
+    fs_meta[path].nlink = 1
     fs_tree[parent][file] = fs_meta[path]
-    return 0, nil
+    return 0, { f=fs_meta[path] }
 end,
 
 read = function(self, path, size, offset, obj)
-    print("read()")
+    print("read():"..path)
     return 0, nil
 end,
 
 write = function(self, path, buf, offset, obj)
-    print("write()")
+    print("write():"..path)
     return nil
 end,
 
@@ -319,18 +372,19 @@ fsyncdir = function(self, path, isdatasync, obj)
 end,
 
 fgetattr = function(self, path, obj)
-    print("fgetattr()")
-    --return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
+    print("fgetattr():"..path)
+    local x = obj.f
+    return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
 end,
 
 
 getattr = function(self, path)
     print("getattr():"..path)
-    local entity = fs_meta[path]
-    if not entity then
+    local x = fs_meta[path]
+    if not x then
         return ENOENT
     end 
-    return 0, entity.mode, entity.ino, entity.dev, entity.nlink, entity.uid, entity.gid, entity.size, entity.atime, entity.mtime, entity.ctime    
+    return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
 end,
 
 listxattr = function(self, path, size)
