@@ -93,7 +93,6 @@ function new_meta(mymode, mypath, mytype)
         atime = t,
         mtime = t,
         ctime = t,
-        path  = mypath,
         etype = mytype
     }
 end
@@ -146,9 +145,12 @@ readdir = function(self, path, offset, dir_fh)
     if dir_ent == nil then
         return 0, {}
     end
+    print("readdir(),v:"..dir_ent)
     dir_fh.k = dir_ent
-    print("readdir(),v:"..dir_ent..",meta_path:"..dir_ent_meta.path)
-    local n = fs_meta[dir_ent_meta.path]
+    local n = path
+    if path ~= "/" then n = n .. "/" end
+    print("readdir():meta from:"..n..dir_ent)
+    n = fs_meta[n..dir_ent]
     return 0, {{d_name=dir_ent, ino=n.ino, d_type=n.mode, offset=offset + 1}}
 end,
 
@@ -200,28 +202,6 @@ flush = function(self, path, obj)
     return 0
 end,
 
-readlink = function(self, path)
-    print("readlink()")
-    local entity = fs_meta[from]
-    if entity then
-        -- TODO: implement!
-        return 0
-    else
-        return ENOENT
-    end
-end,
-
-symlink = function(self, from, to)
-    print("symlink()")
-    local entity = fs_meta[from]
-    if entity then
-        -- TODO: implement!
-        return 0
-    else
-        return ENOENT
-    end
-end,
-
 rename = function(self, from, to)
     print("rename():from:"..from..",to:"..to)
     if from == to then return 0 end
@@ -233,8 +213,6 @@ rename = function(self, from, to)
         fs_tree[to]   = fs_tree[from]
         fs_meta[from] = nil
         fs_tree[from] = nil
-
-        fs_meta[to].path = to
 
         -- rename both parent's references to us
         local p,e = to:splitpath()
@@ -260,6 +238,26 @@ rename = function(self, from, to)
         end
 
         return 0
+    else
+        return ENOENT
+    end
+end,
+
+symlink = function(self, from, to)
+    print("symlink():"..from..",to:"..to)
+    local parent,file = to:splitpath()
+    fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, to, S_IFLNK)
+    fs_meta[to].nlink  = 1
+    fs_meta[to].target = from
+    fs_tree[parent][file] = fs_meta[to]
+    return 0
+end,
+
+readlink = function(self, path)
+    print("readlink():"..path)
+    local entity = fs_meta[path]
+    if entity then
+        return 0, fs_meta[path].target
     else
         return ENOENT
     end

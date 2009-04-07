@@ -131,6 +131,12 @@ if [ "$a" != "mmm, nnn, uuu" ]; then
     exit 1
 fi
 
+ln -s $mntpoint/yy $mntpoint/newyy
+a=`ls -m $mntpoint`
+if [ "$a" != "mmm, nnn, uuu" ]; then
+    echo "ERROR:$a"
+    exit 1
+fi
 
 
 #fusermount -u $mntpoint
