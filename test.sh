@@ -118,5 +118,19 @@ mkdir $mntpoint/yy
 mv $mntpoint/tt/pp/ooo $mntpoint/yy
 mv $mntpoint/yy/ooo $mntpoint/yy/uuu
 
+ln $mntpoint/yy/uuu $mntpoint/yy/nnn
+a=`ls -m $mntpoint/yy`
+if [ "$a" != "nnn, uuu" ]; then
+    echo "ERROR:$a"
+    exit 1
+fi
+ln $mntpoint/yy/nnn $mntpoint/yy/mmm
+a=`ls -m $mntpoint/yy`
+if [ "$a" != "mmm, nnn, uuu" ]; then
+    echo "ERROR:$a"
+    exit 1
+fi
+
+
 
 #fusermount -u $mntpoint
