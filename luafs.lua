@@ -51,6 +51,8 @@ local function _bxor (a,b)
     return res
 end
 
+--local function print () end
+
 
 local ff = 2^32 - 1
 local function _bnot(a) return ff - a end
@@ -244,6 +246,8 @@ rename = function(self, from, to)
 end,
 
 symlink = function(self, from, to)
+    -- 'from' isn't used,.. that can be even from a seperate filesystem, e.g.
+    -- when someone makes a symlink on this filesystem...
     print("symlink():"..from..",to:"..to)
     local parent,file = to:splitpath()
     fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, to, S_IFLNK)

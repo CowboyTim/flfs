@@ -133,7 +133,13 @@ fi
 
 ln -s $mntpoint/yy $mntpoint/newyy
 a=`ls -m $mntpoint`
-if [ "$a" != "mmm, nnn, uuu" ]; then
+if [ "$a" != "newyy, tt, yy" ]; then
+    echo "ERROR:$a"
+    exit 1
+fi
+
+a=`readlink /tmp//yyy/newyy`
+if [ "$a" != '/tmp/yyy/yy' ]; then
     echo "ERROR:$a"
     exit 1
 fi
