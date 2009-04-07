@@ -266,12 +266,16 @@ rename = function(self, from, to)
 end,
 
 link = function(self, from, to)
-    print("link()")
+    print("link():"..from..",to:"..to)
     local entity = fs_meta[from]
     if entity then
         entity.nlink = entity.nlink + 1
         fs_meta[to] = fs_meta[from]
         fs_tree[to] = fs_tree[from]
+
+        local toparent,e = to:splitpath()
+        fs_tree[toparent][e] = fs_meta[to]
+        
         return 0
     else
         return ENOENT
