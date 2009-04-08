@@ -138,11 +138,22 @@ if [ "$a" != "newyy, tt, yy" ]; then
     exit 1
 fi
 
-a=`readlink /tmp//yyy/newyy`
-if [ "$a" != '/tmp/yyy/yy' ]; then
+a=`readlink $mntpoint/newyy`
+if [ "$a" != "$mntpoint/yy" ]; then
     echo "ERROR:$a"
     exit 1
 fi
+mv $mntpoint/newyy $mntpoint/newnewyy
+
+mv $mntpoint/yy/nnn $mntpoint/yy/lll
+mv $mntpoint/yy/lll $mntpoint/lll
+rm -f $mntpoint/lll
+rm -f $mntpoint/yy/mmm
+mv $mntpoint/yy/uuu $mntpoint/tt/ll
+mv $mntpoint/tt/ll/uuu $mntpoint/yy
+
+mv $mntpoint/yy/uuu $mntpoint/tt/ll/kkk
+rm -f $mntpoint/tt/uu/kkk
 
 
 #fusermount -u $mntpoint

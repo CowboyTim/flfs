@@ -286,21 +286,21 @@ end,
 
 unlink = function(self, path)
     print("unlink():"..path)
+
     local entity = fs_meta[path]
-    if entity then
+    entity.nlink = entity.nlink - 1
 
-        entity.nlink = entity.nlink - 1
+    local p,e = path:splitpath()
+    fs_tree[p][e] = nil
 
-        -- nifty huh ;-).. : decrease links to the entry + delete *this*
-        -- reference from the tree and the meta, other references will see the
-        -- decreased nlink from that
+    -- nifty huh ;-).. : decrease links to the entry + delete *this*
+    -- reference from the tree and the meta, other references will see the
+    -- decreased nlink from that
 
-        fs_meta[path] = nil
-        fs_tree[path] = nil
-        return 0
-    else
-        return ENOENT
-    end
+    fs_meta[path] = nil
+    fs_tree[path] = nil
+
+    return 0
 end,
 
 mknod = function(self, path, mode, rdev)
