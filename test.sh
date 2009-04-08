@@ -147,13 +147,31 @@ mv $mntpoint/newyy $mntpoint/newnewyy
 
 mv $mntpoint/yy/nnn $mntpoint/yy/lll
 mv $mntpoint/yy/lll $mntpoint/lll
+a=`ls -l $mntpoint/lll|awk '{print $2}'`
+if [ "$a" != '3' ]; then
+    echo "ERROR:$a"
+    exit 1
+fi
+
 rm -f $mntpoint/lll
+sleep 1
+a=`ls -l $mntpoint/yy/mmm|awk '{print $2}'`
+if [ "$a" != '2' ]; then
+    echo "ERROR:$a"
+    exit 1
+fi
+
 rm -f $mntpoint/yy/mmm
 mv $mntpoint/yy/uuu $mntpoint/tt/ll
 mv $mntpoint/tt/ll/uuu $mntpoint/yy
 
 mv $mntpoint/yy/uuu $mntpoint/tt/ll/kkk
-rm -f $mntpoint/tt/uu/kkk
+a=`ls -l $mntpoint/tt/ll/kkk|awk '{print $2}'`
+if [ "$a" != '1' ]; then
+    echo "ERROR:$a"
+    exit 1
+fi
+rm -f $mntpoint/tt/ll/kkk
 
 
 #fusermount -u $mntpoint
