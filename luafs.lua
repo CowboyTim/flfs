@@ -81,7 +81,7 @@ end
 
 local uid,gid,pid,puid,pgid = fuse.context()
 
-function new_meta(mymode, mypath, mytype)
+function new_meta(mymode, mytype)
     local t = os.time()
     return {
         xattr = {[-1] = true},
@@ -100,7 +100,7 @@ function new_meta(mymode, mypath, mytype)
 end
 
 local fs_meta = {
-    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, '/', S_IFDIR)
+    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, S_IFDIR)
 }
 local fs_tree = {
     ["/"] = {}
@@ -127,7 +127,7 @@ mkdir = function(self, path, mode)
     local parent,subdir = path:splitpath()
     print("parentdir:"..parent)
     fs_meta[parent].nlink = fs_meta[parent].nlink + 1
-    fs_meta[path] = new_meta(mode + S_IFDIR, path, S_IFDIR)
+    fs_meta[path] = new_meta(mode + S_IFDIR, S_IFDIR)
 
     fs_tree[path] = {}
     fs_tree[parent][subdir] = fs_meta[path]
@@ -177,7 +177,7 @@ end,
 create = function(self, path, mode, flag)
     print("create():"..path)
     local parent,file = path:splitpath()
-    fs_meta[path] = new_meta(set_bits(mode, S_IFREG), path, S_IFREG)
+    fs_meta[path] = new_meta(set_bits(mode, S_IFREG), S_IFREG)
     fs_meta[path].nlink = 1
     fs_tree[parent][file] = fs_meta[path]
     return 0, { f=fs_meta[path] }
@@ -250,7 +250,7 @@ symlink = function(self, from, to)
     -- when someone makes a symlink on this filesystem...
     print("symlink():"..from..",to:"..to)
     local parent,file = to:splitpath()
-    fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, to, S_IFLNK)
+    fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, S_IFLNK)
     fs_meta[to].nlink  = 1
     fs_meta[to].target = from
     fs_tree[parent][file] = fs_meta[to]
@@ -304,10 +304,16 @@ unlink = function(self, path)
 end,
 
 mknod = function(self, path, mode, rdev)
-    -- only called for non-symlinks, non-directories, non-files and links.
-    -- Those are handled by symlink, mkdir, create, link
+    -- only called for non-symlinks, non-directories, non-files and links as
+    -- those are handled by symlink, mkdir, create, link. This is called when
+    -- mkfifo is used to make a named pipe for instance.
     print("mknod():"..path)
-    return 0, nil
+    fs_meta[path]         = new_meta(mode, nil)
+    fs_meta[path].nlink   = 1
+    fs_meta[path].dev     = rdev
+    local parent,file = path:splitpath()
+    fs_tree[parent][file] = fs_meta[path]
+    return 0
 end,
 
 chown = function(self, path, uid, gid)

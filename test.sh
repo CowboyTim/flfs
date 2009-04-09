@@ -173,5 +173,12 @@ if [ "$a" != '1' ]; then
 fi
 rm -f $mntpoint/tt/ll/kkk
 
+mkfifo $mntpoint/pipe
+a=`ls -l $mntpoint/pipe|awk '{print $1}'`
+if [ "$a" != 'prw-r--r--' ]; then
+    echo "ERROR:$a"
+    exit 1
+fi
+
 
 #fusermount -u $mntpoint
