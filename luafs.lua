@@ -102,23 +102,20 @@ end
 local fs_meta = {
     ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, S_IFDIR)
 }
-local fs_tree = {
-    ["/"] = {}
-}
+fs_meta["/"].directorylist = {}
 
 local luafs   = {
 
 rmdir = function(self, path)
-    print("rmdir():"..path..",n:".. # fs_tree[path])
-    if next(fs_tree[path]) then
+    print("rmdir():"..path)
+    if next(fs_meta[path].directorylist) then
         return EEXISTS
     end
 
     local parent,dir = path:splitpath()
     fs_meta[parent].nlink = fs_meta[parent].nlink - 1
-    fs_tree[parent][dir] = nil
+    fs_meta[parent].directorylist[dir] = nil
     fs_meta[path] = nil
-    fs_tree[path] = nil
     return 0
 end,
 
@@ -126,11 +123,10 @@ mkdir = function(self, path, mode)
     print('mkdir():'..path)
     local parent,subdir = path:splitpath()
     print("parentdir:"..parent)
-    fs_meta[parent].nlink = fs_meta[parent].nlink + 1
     fs_meta[path] = new_meta(mode + S_IFDIR, S_IFDIR)
-
-    fs_tree[path] = {}
-    fs_tree[parent][subdir] = fs_meta[path]
+    fs_meta[path].directorylist = {}
+    fs_meta[parent].nlink = fs_meta[parent].nlink + 1
+    fs_meta[parent].directorylist[subdir] = fs_meta[path]
 
     print("made dir, mode:"..fs_meta[path].mode)
     return 0
@@ -138,7 +134,7 @@ end,
 
 opendir = function(self, path)
     print("opendir():"..path)
-    return 0, { t=fs_tree[path], k=nil }
+    return 0, { t=fs_meta[path].directorylist, k=nil }
 end,
 
 readdir = function(self, path, offset, dir_fh)
@@ -179,7 +175,7 @@ create = function(self, path, mode, flag)
     local parent,file = path:splitpath()
     fs_meta[path] = new_meta(set_bits(mode, S_IFREG), S_IFREG)
     fs_meta[path].nlink = 1
-    fs_tree[parent][file] = fs_meta[path]
+    fs_meta[parent].directorylist[file] = fs_meta[path]
     return 0, { f=fs_meta[path] }
 end,
 
@@ -212,15 +208,13 @@ rename = function(self, from, to)
     if entity then
         -- rename main node
         fs_meta[to]   = fs_meta[from]
-        fs_tree[to]   = fs_tree[from]
         fs_meta[from] = nil
-        fs_tree[from] = nil
 
         -- rename both parent's references to us
         local p,e = to:splitpath()
-        fs_tree[p][e] = fs_meta[to]
+        fs_meta[p].directorylist[e] = fs_meta[to]
         p,e = from:splitpath()
-        fs_tree[p][e] = nil
+        fs_meta[p].directorylist[e] = nil
 
         -- rename all decendants, maybe not such a good idea to use this
         -- mechanism, but don't forget, how many times does one rename e.g.
@@ -228,13 +222,11 @@ rename = function(self, from, to)
         -- isn't even executed (looped actually)
         --
         if fs_meta[to].etype == S_IFDIR then
-            for sub in pairs(fs_tree[to]) do
+            for sub in pairs(fs_meta[to].directorylist) do
                 ts= to   .. "/" .. sub
                 fs= from .. "/" .. sub
                 print("r:"..sub..",to:"..ts..",from:"..fs)
-                fs_tree[ts] = fs_tree[fs]
                 fs_meta[ts] = fs_meta[fs]
-                fs_tree[fs] = nil
                 fs_meta[fs] = nil
             end
         end
@@ -253,7 +245,7 @@ symlink = function(self, from, to)
     fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, S_IFLNK)
     fs_meta[to].nlink  = 1
     fs_meta[to].target = from
-    fs_tree[parent][file] = fs_meta[to]
+    fs_meta[parent].directorylist[file] = fs_meta[to]
     return 0
 end,
 
@@ -273,10 +265,9 @@ link = function(self, from, to)
     if entity then
         entity.nlink = entity.nlink + 1
         fs_meta[to] = fs_meta[from]
-        fs_tree[to] = fs_tree[from]
 
         local toparent,e = to:splitpath()
-        fs_tree[toparent][e] = fs_meta[to]
+        fs_meta[toparent].directorylist[e] = fs_meta[to]
         
         return 0
     else
@@ -291,14 +282,13 @@ unlink = function(self, path)
     entity.nlink = entity.nlink - 1
 
     local p,e = path:splitpath()
-    fs_tree[p][e] = nil
+    fs_meta[p].directorylist[e] = nil
 
     -- nifty huh ;-).. : decrease links to the entry + delete *this*
     -- reference from the tree and the meta, other references will see the
     -- decreased nlink from that
 
     fs_meta[path] = nil
-    fs_tree[path] = nil
 
     return 0
 end,
@@ -312,7 +302,7 @@ mknod = function(self, path, mode, rdev)
     fs_meta[path].nlink   = 1
     fs_meta[path].dev     = rdev
     local parent,file = path:splitpath()
-    fs_tree[parent][file] = fs_meta[path]
+    fs_meta[parent].directorylist[file] = fs_meta[path]
     return 0
 end,
 
@@ -361,7 +351,7 @@ end,
 
 truncate = function(self, path, size)
     print("truncate()")
-    local entity = fs_tree[path]
+    local entity = fs_meta[path]
     if entity then 
         -- FIXME: use the size parameter and implement something correct
         fs_data[path] = nil
