@@ -20,6 +20,7 @@ local ENOTSUPP  = -524
 local BLOCKSIZE = 4096 -- FUSE gives us buffers on this size
 
 local substr    = string.sub
+local floor     = math.floor
 
 local tab = {  -- tab[i+1][j+1] = xor(i, j) where i,j in (0-15)
   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, },
@@ -54,7 +55,7 @@ local function _bxor (a,b)
     return res
 end
 
-local function print () end
+--local function print () end
 
 
 local ff = 2^32 - 1
@@ -185,8 +186,8 @@ end,
 read = function(self, path, size, offset, obj)
     print("read():"..path)
     local data  = obj.f.contents
-    local findx = math.floor(offset/BLOCKSIZE)
-    local lindx = math.floor((offset + size)/BLOCKSIZE)
+    local findx = floor(offset/BLOCKSIZE)
+    local lindx = floor((offset + size)/BLOCKSIZE)
     print("read():"..path..",bufsize:"..size..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
     if findx == lindx then
         return 0, substr(data[findx],offset,offset+size)
@@ -204,14 +205,19 @@ end,
 write = function(self, path, buf, offset, obj)
     print("write():"..path)
     local data  = obj.f.contents
-    local size  = string.len(buf)
-    local findx = math.floor(offset/BLOCKSIZE)
-    local lindx = math.floor((offset + size - 1)/BLOCKSIZE)
-    print("write():"..path..",bufsize:"..size..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
+    if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
+        data[floor(offset/BLOCKSIZE)] = buf
+        obj.f.size = table.getn(data) * BLOCKSIZE + # data[#data]
+        return #buf
+    end
+
+    local findx = floor(offset/BLOCKSIZE)
+    local lindx = floor((offset + #buf - 1)/BLOCKSIZE)
+    print("write():"..path..",bufsize:"..#buf..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
 
     -- fast and nice: same index
     if findx == lindx then
-        local a = BLOCKSIZE - (offset - findx*BLOCKSIZE)
+        local a = offset % BLOCKSIZE
         local b = a + #buf
         data[findx] = data[findx] or ""
         data[findx] = substr(data[findx],0,a) .. buf .. substr(data[findx],b)
