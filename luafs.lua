@@ -17,7 +17,7 @@ local EEXISTS   = -17
 local ENOSYS    = -38
 local ENOATTR   = -516
 local ENOTSUPP  = -524
-local BLOCKSIZE = 10
+local BLOCKSIZE = 4096 -- FUSE gives us buffers on this size
 
 local substr    = string.sub
 
@@ -54,7 +54,7 @@ local function _bxor (a,b)
     return res
 end
 
---local function print () end
+local function print () end
 
 
 local ff = 2^32 - 1
@@ -206,19 +206,23 @@ write = function(self, path, buf, offset, obj)
     local data  = obj.f.contents
     local size  = string.len(buf)
     local findx = math.floor(offset/BLOCKSIZE)
-    local lindx = math.floor((offset + size)/BLOCKSIZE)
+    local lindx = math.floor((offset + size - 1)/BLOCKSIZE)
     print("write():"..path..",bufsize:"..size..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
 
     -- fast and nice: same index
     if findx == lindx then
+        local a = BLOCKSIZE - (offset - findx*BLOCKSIZE)
+        local b = a + #buf
         data[findx] = data[findx] or ""
-        data[findx] = substr(data[findx],0,offset) .. buf .. substr(data[findx],offset+size)
+        data[findx] = substr(data[findx],0,a) .. buf .. substr(data[findx],b)
+        obj.f.size = table.getn(data) * BLOCKSIZE + # data[#data]
         return #buf
     end
 
     -- start: will exist, as findx!=lindx
-    local a,b = 0,(BLOCKSIZE - (offset - findx*BLOCKSIZE))
-    data[findx] = substr(data[findx] or "", 0, offset) .. substr(buf, a, b)
+    local boffset = offset - findx*BLOCKSIZE
+    local a,b = 0,BLOCKSIZE - boffset
+    data[findx] = substr(data[findx] or "", 0, boffset) .. substr(buf, a, b)
 
     print("write():a:"..a..",b:"..b..",data[findx]:"..data[findx])
 
