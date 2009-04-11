@@ -2,21 +2,24 @@
 
 local fuse = require 'fuse'
 
-local S_WID    = 1 --world
-local S_GID    = 2^3 --group
-local S_UID    = 2^6 --owner
-local S_SID    = 2^9 --sticky bits etc.
-local S_IFIFO  = 1*2^12
-local S_IFCHR  = 2*2^12
-local S_IFDIR  = 4*2^12
-local S_IFBLK  = 6*2^12
-local S_IFREG  = 2^15
-local S_IFLNK  = S_IFREG + S_IFCHR
-local ENOENT   = -2
-local EEXISTS  = -17
-local ENOSYS   = -38
-local ENOATTR  = -516
-local ENOTSUPP = -524
+local S_WID     = 1 --world
+local S_GID     = 2^3 --group
+local S_UID     = 2^6 --owner
+local S_SID     = 2^9 --sticky bits etc.
+local S_IFIFO   = 1*2^12
+local S_IFCHR   = 2*2^12
+local S_IFDIR   = 4*2^12
+local S_IFBLK   = 6*2^12
+local S_IFREG   = 2^15
+local S_IFLNK   = S_IFREG + S_IFCHR
+local ENOENT    = -2
+local EEXISTS   = -17
+local ENOSYS    = -38
+local ENOATTR   = -516
+local ENOTSUPP  = -524
+local BLOCKSIZE = 10
+
+local substr    = string.sub
 
 local tab = {  -- tab[i+1][j+1] = xor(i, j) where i,j in (0-15)
   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, },
@@ -174,18 +177,66 @@ create = function(self, path, mode, flag)
     local parent,file = path:splitpath()
     fs_meta[path] = new_meta(set_bits(mode, S_IFREG))
     fs_meta[path].nlink = 1
+    fs_meta[path].contents = {}
     fs_meta[parent].directorylist[file] = fs_meta[path]
     return 0, { f=fs_meta[path] }
 end,
 
 read = function(self, path, size, offset, obj)
     print("read():"..path)
-    return 0, nil
+    local data  = obj.f.contents
+    local findx = math.floor(offset/BLOCKSIZE)
+    local lindx = math.floor((offset + size)/BLOCKSIZE)
+    print("read():"..path..",bufsize:"..size..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
+    if findx == lindx then
+        return 0, substr(data[findx],offset,offset+size)
+    end
+    local str = ""
+    for i=findx,lindx do
+        if not data[i] then break end
+        print("read():blockI:"..i..",data:"..data[i])
+        str = str .. data[i]
+    end
+    print("read():str:"..str)
+    return 0, str
 end,
 
 write = function(self, path, buf, offset, obj)
     print("write():"..path)
-    return nil
+    local data  = obj.f.contents
+    local size  = string.len(buf)
+    local findx = math.floor(offset/BLOCKSIZE)
+    local lindx = math.floor((offset + size)/BLOCKSIZE)
+    print("write():"..path..",bufsize:"..size..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
+
+    -- fast and nice: same index
+    if findx == lindx then
+        data[findx] = data[findx] or ""
+        data[findx] = substr(data[findx],0,offset) .. buf .. substr(data[findx],offset+size)
+        return #buf
+    end
+
+    -- start: will exist, as findx!=lindx
+    local a,b = 0,(BLOCKSIZE - (offset - findx*BLOCKSIZE))
+    data[findx] = substr(data[findx] or "", 0, offset) .. substr(buf, a, b)
+
+    print("write():a:"..a..",b:"..b..",data[findx]:"..data[findx])
+
+    -- middle: doesn't necessarily have to exist
+    for i=findx+1,lindx-1 do
+        a, b = b + 1, b + 1 + BLOCKSIZE
+        data[i] = substr(buf, a, b)
+        print("write():a:"..a..",b:"..b..",i:"..i..",data[i]:"..data[i])
+    end
+
+    -- end: maybe exist, as findx!=lindx, and not ending on blockboundary
+    a, b = b + 1, b + 1 + BLOCKSIZE
+    data[lindx] = substr(buf, a, b) .. substr(data[lindx] or "", b)
+    print("write():a:"..a..",b:"..b..",data[lindx]:"..data[lindx])
+
+    obj.f.size = table.getn(data) * BLOCKSIZE + # data[#data]
+
+    return #buf
 end,
 
 release = function(self, path, obj)
@@ -195,7 +246,18 @@ release = function(self, path, obj)
 end,
 
 flush = function(self, path, obj)
-    print("flush()")
+    print("flush():"..path)
+    return 0
+end,
+
+ftruncate = function(self, path, size, obj)
+    print("ftruncate():"..path)
+    return 0
+end,
+
+truncate = function(self, path, size)
+    print("truncate():"..path)
+    fs_meta[path].contents = {}
     return 0
 end,
 
@@ -340,27 +402,8 @@ utime = function(self, path, atime, mtime)
     end
 end,
 
-ftruncate = function(self, path, size, obj)
-    print("ftruncate()")
-    local old_size = obj.meta.size
-    obj.meta.size = size
-    clear_buffer(obj, floor(size/mem_block_size), floor(old_size/mem_block_size))
-    return 0
-end,
-
-truncate = function(self, path, size)
-    print("truncate()")
-    local entity = fs_meta[path]
-    if entity then 
-        -- FIXME: use the size parameter and implement something correct
-        fs_data[path] = nil
-    else
-        return ENOENT
-    end
-end,
-
 access = function(self, path)
-    print("access()")
+    print("access():"..path)
     -- FIXME: nop?! see man access, why do I need this?! 
     return 0
 end,
