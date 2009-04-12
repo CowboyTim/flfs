@@ -19,9 +19,8 @@ function my_err (){
     ok=0
 }
 
-trap my_err ERR INT TERM HUP
-
 mkdir -p $mntpoint
+trap my_err ERR INT TERM HUP
 eval `fusermount -u $mntpoint`
 (lua ./luafs.lua test $mntpoint -f)&
 
@@ -180,5 +179,8 @@ if [ "$a" != 'prw-r--r--' ]; then
     exit 1
 fi
 
+
+    
+mkdir -p /tmp/yyy/uuu/iui/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d
 
 #fusermount -u $mntpoint
