@@ -9,6 +9,7 @@
 #define _GNU_SOURCE
 
 #include <fuse.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -198,6 +199,8 @@ static int xmp_opendir(const char *path, struct fuse_file_info *fi)
     /* save the return as reference */
     fi->fh = luaL_ref(L_VM, LUA_REGISTRYINDEX);
 
+    fprintf(stderr,"***opendir():fh:%lu***\n", (long)fi->fh);
+
     EPILOGUE(1);
 
     return res;
@@ -217,6 +220,8 @@ static int xmp_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     int done = FALSE;
     int i;
 
+    fprintf(stderr,"***readdir():fh:%lu***\n", (long)fi->fh);
+
     LOAD_FUNC("readdir")
     lua_pushstring(L_VM, path);
     lua_pushnumber(L_VM, offset);
@@ -225,6 +230,11 @@ static int xmp_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     err_pcall(res);
 
     res = lua_tointeger(L_VM, -2);
+    
+    if (!lua_istable(L_VM, -1)) {
+        EPILOGUE(2)
+        return -1;
+    }
     cnt = lua_objlen(L_VM, -1);
 
     for (i =0; i < cnt && !done; i++) {
@@ -291,6 +301,8 @@ static int xmp_fsyncdir(const char *path, int isdatasync, struct fuse_file_info 
 static int xmp_releasedir(const char *path, struct fuse_file_info *fi)
 {
     int res;
+
+    fprintf(stderr,"***releasedir():fh:%lu***\n", (long)fi->fh);
 
     LOAD_FUNC("releasedir")
     lua_pushstring(L_VM, path);
@@ -481,6 +493,27 @@ static int xmp_utime(const char *path, struct utimbuf *buf)
     lua_pushstring(L_VM, path);
     lua_pushnumber(L_VM, buf->actime);
     lua_pushnumber(L_VM, buf->modtime);
+    obj_pcall(3, 1, 0);
+    err_pcall(res);
+    res = lua_tointeger(L_VM, -1);
+    EPILOGUE(1);
+
+    return res;
+}
+
+static int xmp_utimens(const char *path, const struct timespec tv[2])
+{
+    int res;
+    char b1[100];
+
+    long aa = tv[0].tv_sec;
+
+    LOAD_FUNC("utimens")
+    lua_pushstring(L_VM, path);
+    sprintf(&b1, "%lu", aa);
+    lua_pushstring(L_VM, &b1);
+    sprintf(&b1, "%lu", aa);
+    lua_pushstring(L_VM, &b1);
     obj_pcall(3, 1, 0);
     err_pcall(res);
     res = lua_tointeger(L_VM, -1);
@@ -747,6 +780,7 @@ static struct fuse_operations xmp_oper = {
     .listxattr	= xmp_listxattr,
     .removexattr= xmp_removexattr,
 #endif
+    .utimens= xmp_utimens,
 };
 
 static xmp_alarm(lua_State *L)
@@ -805,7 +839,7 @@ static xmp_main(lua_State *L)
      * hand over to fuse loop
      */
 
-    fuse_main(argc, argv, &xmp_oper);
+    fuse_main(argc, argv, &xmp_oper, L);
 
     /*
      * remove argv strings from L stack
