@@ -7,7 +7,7 @@ use Fcntl;
 use Fcntl qw(SEEK_CUR);
 
 
-my $mntpoint = "/tmp/yyy";
+my $mntpoint = $ARGV[0] or die "Usage: $0 <mountpount>\n";
 my $file     = "$mntpoint/file";
 
 sysopen(my $fh, $file, O_CREAT|O_TRUNC|O_RDWR)
