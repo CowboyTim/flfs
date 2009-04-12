@@ -14,6 +14,7 @@ local S_IFREG   = 2^15
 local S_IFLNK   = S_IFREG + S_IFCHR
 local ENOENT    = -2
 local EEXISTS   = -17
+local ENAMETOOLONG   = -19
 local ENOSYS    = -38
 local ENOATTR   = -516
 local ENOTSUPP  = -524
@@ -21,6 +22,13 @@ local BLOCKSIZE = 4096 -- FUSE gives us buffers on this size
 
 local substr    = string.sub
 local floor     = math.floor
+local time      = os.time
+
+local t = {}
+for i=1,BLOCKSIZE do
+    table.insert(t, "\000")
+end
+local empty_block = table.concat(t)
 
 local tab = {  -- tab[i+1][j+1] = xor(i, j) where i,j in (0-15)
   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, },
@@ -86,7 +94,7 @@ end
 local uid,gid,pid,puid,pgid = fuse.context()
 
 function new_meta(mymode)
-    local t = os.time()
+    local t = time()
     return {
         xattr = {[-1] = true},
         mode  = mymode,
@@ -124,6 +132,9 @@ end,
 
 mkdir = function(self, path, mode)
     print('mkdir():'..path)
+    if #path > 1024 then
+        return ENAMETOOLONG
+    end
     local parent,subdir = path:splitpath()
     print("parentdir:"..parent)
     fs_meta[path] = new_meta(mode + S_IFDIR)
@@ -152,7 +163,7 @@ readdir = function(self, path, offset, dir_fh)
     if path ~= "/" then n = n .. "/" end
     print("readdir():meta from:"..n..dir_ent)
     n = fs_meta[n..dir_ent]
-    return 0, {{d_name=dir_ent, ino=n.ino, d_type=n.mode, offset=offset + 1}}
+    return 0, {{d_name=dir_ent, offset=offset + 1, d_type=n.mode, ino=n.ino}}
 end,
 
 releasedir = function(self, path, dirent)
@@ -169,13 +180,16 @@ open = function(self, path, mode)
     if entity then
         return 0, { f=entity }
     else
-        return ENOENT
+        return ENOENT, nil
     end
 end,
 
-create = function(self, path, mode, flag)
-    print("create():"..path)
+create = function(self, path, mode, flags)
+    print("create():"..path..",mode:"..mode..",flags:"..flags)
     local parent,file = path:splitpath()
+    if mode == 32768 then
+        mode = mk_mode(6,4,4)
+    end
     fs_meta[path] = new_meta(set_bits(mode, S_IFREG))
     fs_meta[path].nlink = 1
     fs_meta[path].contents = {}
@@ -184,53 +198,59 @@ create = function(self, path, mode, flag)
 end,
 
 read = function(self, path, size, offset, obj)
-    print("read():"..path)
+    --print("read():"..path)
     local data  = obj.f.contents
     local findx = floor(offset/BLOCKSIZE)
     local lindx = floor((offset + size)/BLOCKSIZE)
-    print("read():"..path..",bufsize:"..size..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
+    --print("read():"..path..",bufsize:"..size..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
     if findx == lindx then
-        return 0, substr(data[findx],offset,offset+size)
+        return 0, substr(data[findx],offset % BLOCKSIZE,offset%BLOCKSIZE+size)
     end
     local str = ""
-    for i=findx,lindx do
-        if not data[i] then break end
-        print("read():blockI:"..i..",data:"..data[i])
-        str = str .. data[i]
+    for i=findx,lindx-1 do
+        if not data[i] then 
+            str = str .. empty_block
+        else
+            print("read():blockI:"..i..",data#:"..#data[i])
+            str = str .. data[i]
+        end
     end
-    print("read():str:"..str)
+    --print("read():block lindx:"..lindx..",data#:"..#(data[lindx] or ""))
+    str = str .. substr(data[lindx] or empty_block,0,size - #str)
+    --print("read():strlen:"..#str)
     return 0, str
 end,
 
 write = function(self, path, buf, offset, obj)
-    print("write():"..path)
+    --print("write():"..path)
+    obj.f.size = obj.f.size > (offset + #buf) and obj.f.size or (offset + #buf)
+
     local data  = obj.f.contents
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
         data[floor(offset/BLOCKSIZE)] = buf
-        obj.f.size = table.getn(data) * BLOCKSIZE + # data[#data]
         return #buf
     end
 
     local findx = floor(offset/BLOCKSIZE)
     local lindx = floor((offset + #buf - 1)/BLOCKSIZE)
-    print("write():"..path..",bufsize:"..#buf..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
+    --print("write():"..path..",bufsize:"..#buf..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
 
     -- fast and nice: same index
     if findx == lindx then
         local a = offset % BLOCKSIZE
-        local b = a + #buf
-        data[findx] = data[findx] or ""
+        local b = a + #buf + 1
+        --print("write():a:"..a..",b:"..b)
+        data[findx] = data[findx] or empty_block
         data[findx] = substr(data[findx],0,a) .. buf .. substr(data[findx],b)
-        obj.f.size = table.getn(data) * BLOCKSIZE + # data[#data]
         return #buf
     end
 
     -- start: will exist, as findx!=lindx
     local boffset = offset - findx*BLOCKSIZE
     local a,b = 0,BLOCKSIZE - boffset
-    data[findx] = substr(data[findx] or "", 0, boffset) .. substr(buf, a, b)
+    data[findx] = substr(data[findx] or empty_block, 0, boffset) .. substr(buf, a, b)
 
-    print("write():a:"..a..",b:"..b..",data[findx]:"..data[findx])
+    --print("write():a:"..a..",b:"..b..",data[findx]:"..data[findx])
 
     -- middle: doesn't necessarily have to exist
     for i=findx+1,lindx-1 do
@@ -241,10 +261,8 @@ write = function(self, path, buf, offset, obj)
 
     -- end: maybe exist, as findx!=lindx, and not ending on blockboundary
     a, b = b + 1, b + 1 + BLOCKSIZE
-    data[lindx] = substr(buf, a, b) .. substr(data[lindx] or "", b)
-    print("write():a:"..a..",b:"..b..",data[lindx]:"..data[lindx])
-
-    obj.f.size = table.getn(data) * BLOCKSIZE + # data[#data]
+    data[lindx] = substr(buf, a, b) .. substr(data[lindx] or empty_block, b)
+    --print("write():a:"..a..",b:"..b..",data[lindx]:"..data[lindx])
 
     return #buf
 end,
@@ -324,7 +342,7 @@ readlink = function(self, path)
     if entity then
         return 0, fs_meta[path].target
     else
-        return ENOENT
+        return ENOENT, nil
     end
 end,
 
@@ -374,6 +392,8 @@ mknod = function(self, path, mode, rdev)
     fs_meta[path].dev     = rdev
     local parent,file = path:splitpath()
     fs_meta[parent].directorylist[file] = fs_meta[path]
+    fs_meta[parent].ctime = time()
+    fs_meta[parent].mtime = fs_meta[parent][ctime]
     return 0
 end,
 
@@ -381,8 +401,9 @@ chown = function(self, path, uid, gid)
     print("chown():"..path..",uid:"..uid,",gid:"..gid)
     local entity = fs_meta[path] 
     if entity then
-        entity.uid = uid
-        entity.gid = gid
+        entity.uid   = uid
+        entity.gid   = gid
+        entity.ctime = time()
         return 0
     else
         return ENOENT
@@ -393,7 +414,8 @@ chmod = function(self, path, mode)
     print("chmod():"..path..",mode:"..mode)
     local entity = fs_meta[path] 
     if entity then
-        entity.mode = mode
+        entity.mode  = mode
+        entity.ctime = time()
         return 0
     else
         return ENOENT
@@ -402,6 +424,19 @@ end,
 
 utime = function(self, path, atime, mtime)
     print("utime()")
+    local entity = fs_meta[path] 
+    if entity then
+        entity.atime = atime
+        entity.mtime = mtime
+        return 0
+    else
+        return ENOENT
+    end
+end,
+
+
+utimens = function(self, path, atime, mtime)
+    print("utimens():path"..path..",atime:"..atime..",mtime:"..mtime)
     local entity = fs_meta[path] 
     if entity then
         entity.atime = atime
@@ -439,7 +474,7 @@ getattr = function(self, path)
     print("getattr():"..path)
     local x = fs_meta[path]
     if not x then
-        return ENOENT
+        return ENOENT, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
     end 
     return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
 end,
@@ -456,7 +491,7 @@ listxattr = function(self, path, size)
         end
         return 0, s
     else
-        return ENOENT
+        return ENOENT, nil
     end
 end,
 
@@ -488,17 +523,19 @@ getxattr = function(self, path, name, size)
     if xa then
         return 0, xa[name] or "" --not found is empty string
     else
-        return ENOENT
+        return ENOENT, nil
     end
 end,
 
 statfs = function(self, path)
     print("statfs()")
-    local o = {bs=1024,blocks=4096,bfree=1024,bavail=3072,bfiles=1024,bffree=1024}
+    local o = {bs=BLOCKSIZE,blocks=4096,bfree=1024,bavail=3072,bfiles=1024,bffree=1024}
     return 0, o.bs, o.blocks, o.bfree, o.bavail, o.bfiles, o.bffree
 end
 }
 
+-- -s option is needed: no -s option makes fuse threaded, and the fuse.c
+-- implementation doesn't appear to be threadsafe working yet..
 fuse_opt = { 'luafs', 'mnt', '-f', '-s', '-oallow_other'}
 
 if select('#', ...) < 2 then
