@@ -465,7 +465,11 @@ static int xmp_truncate(const char *path, off_t size)
 
     LOAD_FUNC("truncate")
     lua_pushstring(L_VM, path);
-    lua_pushnumber(L_VM, size);
+
+    /* FIXME: cast to int, else it is treated as unsigned 
+     * is this a good idea? should read more manpages..
+     *  */
+    lua_pushnumber(L_VM, (int)size); 
     obj_pcall(2, 1, 0);
     err_pcall(res);
     res = lua_tointeger(L_VM, -1);
@@ -511,6 +515,8 @@ static int xmp_utimens(const char *path, const struct timespec tv[2])
 {
     int res;
     char b1[100];
+
+    /* FIXME: implement this correct: without the b1 and sprintf */
 
     long aa = tv[0].tv_sec;
 
