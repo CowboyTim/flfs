@@ -100,11 +100,13 @@ local function mk_mode(owner, group, world, sticky)
     return owner * S_UID + group * S_GID + world + sticky * S_SID
 end
 
-local uid,gid,pid,puid,pgid = fuse.context()
 local inode_start = 1
 
 function new_meta(mymode)
     local t = time()
+
+    local uid,gid,pid,puid,pgid = fuse.context()
+
     inode_start = inode_start + 1
     return {
         xattr = {[-1] = true},
@@ -112,8 +114,8 @@ function new_meta(mymode)
         ino   = inode_start,
         dev   = 0,
         nlink = 2,
-        uid   = puid,
-        gid   = pgid,
+        uid   = uid,
+        gid   = gid,
         size  = 0,
         atime = t,
         mtime = t,
@@ -241,7 +243,8 @@ end,
 write = function(self, path, buf, offset, obj)
     --print("write():"..path)
     obj.f.size = obj.f.size > (offset + #buf) and obj.f.size or (offset + #buf)
-    obj.f.mtime = time()
+    obj.f.ctime = time()
+    obj.f.mtime = obj.f.ctime
 
     local data  = obj.f.contents
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
@@ -299,14 +302,30 @@ end,
 ftruncate = function(self, path, size, obj)
     print("ftruncate():"..path)
     -- FIXME: implement the size parameter
-    fs_meta[path].mtime = time()
+    local m = obj.f
+
+    -- update meta information
+    m.ctime = time()
+    m.mtime = m.ctime
+    m.size  = size
+
+    -- update contents
+    local lindx = floor(size/BLOCKSIZE)
+    local data  = m.contents
+    for i=lindx+1,#data do
+        data[i] = nil
+    end
+    data[lindx] = substr(data[lindx],0,size%BLOCKSIZE)
     return 0
 end,
 
 truncate = function(self, path, size)
     print("truncate():"..path)
-    fs_meta[path].mtime = time()
-    fs_meta[path].contents = {}
+    local m = fs_meta[path]
+    m.ctime    = time()
+    m.mtime    = fs_meta[path].ctime
+    m.contents = {}
+    m.size     = 0
     return 0
 end,
 
@@ -419,10 +438,11 @@ mknod = function(self, path, mode, rdev)
     -- mkfifo is used to make a named pipe for instance.
     --
     -- FIXME: support 'plain' mknod too: S_IFBLK and S_IFCHR
-    print("mknod():"..path)
+    print("mknod():"..path..",mode:"..mode)
     fs_meta[path]         = new_meta(mode)
     fs_meta[path].nlink   = 1
     fs_meta[path].dev     = rdev
+
     local parent,file = path:splitpath()
     fs_meta[parent].directorylist[file] = fs_meta[path]
     fs_meta[parent].ctime = time()
