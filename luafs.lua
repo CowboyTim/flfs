@@ -21,13 +21,16 @@ local F_OK      = 4 -- Test for existence
 
 local EPERM        = -1
 local ENOENT       = -2
-local EEXISTS      = -17
+local EEXIST       = -17
+local EINVAL       = -22
+local EFBIG        = -27
 local ENAMETOOLONG = -36
 local ENOSYS       = -38
 local ENOATTR      = -516
 local ENOTSUPP     = -524
 
-local BLOCKSIZE    = 4096 -- FUSE gives us buffers on this size
+local BLOCKSIZE    = 4096
+local MAXINT       = 4294967295
 
 local substr    = string.sub
 local floor     = math.floor
@@ -133,7 +136,7 @@ local luafs   = {
 rmdir = function(self, path)
     print("rmdir():"..path)
     if next(fs_meta[path].directorylist) then
-        return EEXISTS
+        return EEXIST 
     end
 
     local parent,dir = path:splitpath()
@@ -300,8 +303,18 @@ flush = function(self, path, obj)
 end,
 
 ftruncate = function(self, path, size, obj)
-    print("ftruncate():"..path)
-    -- FIXME: implement the size parameter
+    print("ftruncate():"..path..",size:"..size)
+
+    if size >= 0 then
+        return EINVAL
+    end
+
+    -- FIXME:
+    -- restriction of lua? or fuse.c? or.. maybe find out someday why there's a
+    -- weird max and fix it. I want my files to be big! :-)
+    if size >= 2147483647 then
+        return EFBIG
+    end
     local m = obj.f
 
     -- update meta information
@@ -315,18 +328,13 @@ ftruncate = function(self, path, size, obj)
     for i=lindx+1,#data do
         data[i] = nil
     end
-    data[lindx] = substr(data[lindx],0,size%BLOCKSIZE)
+    data[lindx] = substr(data[lindx] or "",0,size%BLOCKSIZE)
     return 0
 end,
 
 truncate = function(self, path, size)
     print("truncate():"..path)
-    local m = fs_meta[path]
-    m.ctime    = time()
-    m.mtime    = fs_meta[path].ctime
-    m.contents = {}
-    m.size     = 0
-    return 0
+    return self:ftruncate(path,size,{ f=fs_meta[path] })
 end,
 
 rename = function(self, from, to)
@@ -335,8 +343,9 @@ rename = function(self, from, to)
 
     local entity = fs_meta[from]
     if entity then
+
         -- rename main node
-        fs_meta[to]   = fs_meta[from]
+        fs_meta[to]   = entity
         fs_meta[from] = nil
 
         -- rename both parent's references to us
@@ -398,9 +407,14 @@ link = function(self, from, to)
     print("link():"..from..",to:"..to)
     local entity = fs_meta[from]
     if entity then
+        -- update meta
+        entity.ctime = time()
         entity.nlink = entity.nlink + 1
-        fs_meta[to] = fs_meta[from]
 
+        -- 'copy'
+        fs_meta[to]  = fs_meta[from]
+
+        -- update the TO parent: add entry + change meta
         local toparent,e = to:splitpath()
         fs_meta[toparent].directorylist[e] = fs_meta[to]
         fs_meta[toparent].ctime = time()
@@ -417,6 +431,7 @@ unlink = function(self, path)
 
     local entity = fs_meta[path]
     entity.nlink = entity.nlink - 1
+    entity.ctime = time()
 
     local p,e = path:splitpath()
     fs_meta[p].directorylist[e] = nil
@@ -454,8 +469,22 @@ chown = function(self, path, uid, gid)
     print("chown():"..path..",uid:"..uid,",gid:"..gid)
     local entity = fs_meta[path] 
     if entity then
-        entity.uid   = uid
-        entity.gid   = gid
+
+        -- Funny this is.. but this appears to be ext3 on linux behavior.
+        -- However, FUSE doesn't give me e.g. -1 -1 as user root, while it
+        -- wants the ctime to be adjusted. I think this is the nitty gritty
+        -- details that makes this code rather 'not needed' anywayz..
+        --
+        -- That's the reason why tests 141, 145, 149 and 153 of pjd fail
+        -- btw...
+        local cuid,cgid,pid,puid,pgid = fuse.context()
+        if cuid ~= 0 then
+            if not (uid == MAXINT and gid == MAXINT) then
+                entity.mode = _band(entity.mode, _bnot(S_SID))
+            end
+        end
+        if uid ~= MAXINT then entity.uid = uid end
+        if gid ~= MAXINT then entity.gid = gid end
         entity.ctime = time()
         return 0
     else
