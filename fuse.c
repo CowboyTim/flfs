@@ -93,23 +93,29 @@ static int xmp_getattr(const char *path, struct stat *st)
 
     res = lua_tointeger(L_VM, -11);
 
-    st->st_mode = lua_tointeger(L_VM, -10);
-    st->st_ino  = lua_tointeger(L_VM, -9);
-    st->st_rdev = lua_tointeger(L_VM, -8);
-    st->st_dev  = lua_tointeger(L_VM, -8);
-    st->st_nlink= lua_tointeger(L_VM, -7);
-    st->st_uid  = lua_tointeger(L_VM, -6);
-    st->st_gid  = lua_tointeger(L_VM, -5);
-    st->st_size = lua_tointeger(L_VM, -4);
-    st->st_atime= lua_tointeger(L_VM, -3);
-    st->st_mtime= lua_tointeger(L_VM, -2);
-    st->st_ctime= lua_tointeger(L_VM, -1);
+    if (res == 0){
 
-    /* Fill in fields not provided by Python lstat() */
-    st->st_blksize= 4096;
-    st->st_blocks= (st->st_size + 511)/512;
+        st->st_mode = lua_tointeger(L_VM, -10);
+        st->st_ino  = lua_tointeger(L_VM, -9);
+        st->st_rdev = lua_tointeger(L_VM, -8);
+        st->st_dev  = lua_tointeger(L_VM, -8);
+        st->st_nlink= lua_tointeger(L_VM, -7);
+        st->st_uid  = lua_tointeger(L_VM, -6);
+        st->st_gid  = lua_tointeger(L_VM, -5);
+        st->st_size = lua_tointeger(L_VM, -4);
+        st->st_atime= lua_tointeger(L_VM, -3);
+        st->st_mtime= lua_tointeger(L_VM, -2);
+        st->st_ctime= lua_tointeger(L_VM, -1);
+
+        /* Fill in fields not provided by Python lstat() */
+        st->st_blksize= 4096;
+        st->st_blocks= (st->st_size + 511)/512;
+
+        fprintf(stderr, "nlinks:%lu\n", (long)st->st_nlink);
+    }
 
     EPILOGUE(11)
+
 
     return res;
 }
