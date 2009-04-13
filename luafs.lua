@@ -12,13 +12,22 @@ local S_IFDIR   = 4*2^12
 local S_IFBLK   = 6*2^12
 local S_IFREG   = 2^15
 local S_IFLNK   = S_IFREG + S_IFCHR
-local ENOENT    = -2
-local EEXISTS   = -17
-local ENAMETOOLONG   = -19
-local ENOSYS    = -38
-local ENOATTR   = -516
-local ENOTSUPP  = -524
-local BLOCKSIZE = 4096 -- FUSE gives us buffers on this size
+
+-- For access(), taken from unistd.h
+local R_OK      = 1 -- Test for read permissions
+local W_OK      = 2 -- Test for write permissions
+local X_OK      = 3 -- Test for execute permissions
+local F_OK      = 4 -- Test for existence
+
+local EPERM        = -1
+local ENOENT       = -2
+local EEXISTS      = -17
+local ENAMETOOLONG = -36
+local ENOSYS       = -38
+local ENOATTR      = -516
+local ENOTSUPP     = -524
+
+local BLOCKSIZE    = 4096 -- FUSE gives us buffers on this size
 
 local substr    = string.sub
 local floor     = math.floor
@@ -92,13 +101,15 @@ local function mk_mode(owner, group, world, sticky)
 end
 
 local uid,gid,pid,puid,pgid = fuse.context()
+local inode_start = 1
 
 function new_meta(mymode)
     local t = time()
+    inode_start = inode_start + 1
     return {
         xattr = {[-1] = true},
         mode  = mymode,
-        ino   = 0,
+        ino   = inode_start,
         dev   = 0,
         nlink = 2,
         uid   = puid,
@@ -126,6 +137,8 @@ rmdir = function(self, path)
     local parent,dir = path:splitpath()
     fs_meta[parent].nlink = fs_meta[parent].nlink - 1
     fs_meta[parent].directorylist[dir] = nil
+    fs_meta[parent].ctime = time()
+    fs_meta[parent].mtime = fs_meta[parent].ctime
     fs_meta[path] = nil
     return 0
 end,
@@ -141,6 +154,8 @@ mkdir = function(self, path, mode)
     fs_meta[path].directorylist = {}
     fs_meta[parent].nlink = fs_meta[parent].nlink + 1
     fs_meta[parent].directorylist[subdir] = fs_meta[path]
+    fs_meta[parent].ctime = time()
+    fs_meta[parent].mtime = fs_meta[parent].ctime
 
     print("made dir, mode:"..fs_meta[path].mode)
     return 0
@@ -194,6 +209,8 @@ create = function(self, path, mode, flags)
     fs_meta[path].nlink = 1
     fs_meta[path].contents = {}
     fs_meta[parent].directorylist[file] = fs_meta[path]
+    fs_meta[parent].ctime = time()
+    fs_meta[parent].mtime = fs_meta[parent].ctime
     return 0, { f=fs_meta[path] }
 end,
 
@@ -224,6 +241,7 @@ end,
 write = function(self, path, buf, offset, obj)
     --print("write():"..path)
     obj.f.size = obj.f.size > (offset + #buf) and obj.f.size or (offset + #buf)
+    obj.f.mtime = time()
 
     local data  = obj.f.contents
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
@@ -280,11 +298,14 @@ end,
 
 ftruncate = function(self, path, size, obj)
     print("ftruncate():"..path)
+    -- FIXME: implement the size parameter
+    fs_meta[path].mtime = time()
     return 0
 end,
 
 truncate = function(self, path, size)
     print("truncate():"..path)
+    fs_meta[path].mtime = time()
     fs_meta[path].contents = {}
     return 0
 end,
@@ -300,10 +321,16 @@ rename = function(self, from, to)
         fs_meta[from] = nil
 
         -- rename both parent's references to us
+        -- 'to'
         local p,e = to:splitpath()
         fs_meta[p].directorylist[e] = fs_meta[to]
+        fs_meta[p].ctime = time()
+        fs_meta[p].mtime = fs_meta[p].ctime
+        -- 'from'
         p,e = from:splitpath()
         fs_meta[p].directorylist[e] = nil
+        fs_meta[p].ctime = time()
+        fs_meta[p].mtime = fs_meta[p].ctime
 
         -- rename all decendants, maybe not such a good idea to use this
         -- mechanism, but don't forget, how many times does one rename e.g.
@@ -333,6 +360,8 @@ symlink = function(self, from, to)
     fs_meta[to].nlink  = 1
     fs_meta[to].target = from
     fs_meta[parent].directorylist[file] = fs_meta[to]
+    fs_meta[parent].ctime = time()
+    fs_meta[parent].mtime = fs_meta[parent].ctime
     return 0
 end,
 
@@ -355,6 +384,8 @@ link = function(self, from, to)
 
         local toparent,e = to:splitpath()
         fs_meta[toparent].directorylist[e] = fs_meta[to]
+        fs_meta[toparent].ctime = time()
+        fs_meta[toparent].mtime = fs_meta[toparent].ctime
         
         return 0
     else
@@ -370,6 +401,8 @@ unlink = function(self, path)
 
     local p,e = path:splitpath()
     fs_meta[p].directorylist[e] = nil
+    fs_meta[p].ctime = time()
+    fs_meta[p].mtime = fs_meta[p].ctime
 
     -- nifty huh ;-).. : decrease links to the entry + delete *this*
     -- reference from the tree and the meta, other references will see the
@@ -393,7 +426,7 @@ mknod = function(self, path, mode, rdev)
     local parent,file = path:splitpath()
     fs_meta[parent].directorylist[file] = fs_meta[path]
     fs_meta[parent].ctime = time()
-    fs_meta[parent].mtime = fs_meta[parent][ctime]
+    fs_meta[parent].mtime = fs_meta[parent].ctime
     return 0
 end,
 
@@ -447,9 +480,21 @@ utimens = function(self, path, atime, mtime)
     end
 end,
 
-access = function(self, path)
-    print("access():"..path)
-    -- FIXME: nop?! see man access, why do I need this?! 
+access = function(self, path, mode)
+    print("access():"..path..",mode:"..mode)
+--    local p = '/'
+--    for dir in string.gmatch(path, "[^/]+") do
+--        p = p .. dir
+--        print("access():dirpart:"..dir..",p:"..p)
+--        if fs_meta[p] then
+--            if _bor(fs_meta[p].mode, mode) == 0 then
+--                return EPERM
+--            end
+--        else
+--            if _bor(mode, F_OK) then return ENOENT end
+--        end
+--    end
+
     return 0
 end,
 
@@ -466,25 +511,35 @@ end,
 fgetattr = function(self, path, obj)
     print("fgetattr():"..path)
     local x = obj.f
+    print("fgetattr():"..x.mode..",".. x.ino..",".. x.dev..",".. x.nlink..",".. x.uid..",".. x.gid..",".. x.size..",".. x.atime..",".. x.mtime..",".. x.ctime)
     return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
 end,
 
 
 getattr = function(self, path)
     print("getattr():"..path)
+    if #path > 1024 then
+        return ENAMETOOLONG
+    end
+
+    -- FIXME: All ENAMETOOLONG needs to implemented better (and correct)
+    local dir,file = path:splitpath()
+    if #file > 255 then
+        return ENAMETOOLONG
+    end
     local x = fs_meta[path]
     if not x then
         return ENOENT, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
     end 
+    print("getattr():"..x.mode..",".. x.ino..",".. x.dev..",".. x.nlink..",".. x.uid..",".. x.gid..",".. x.size..",".. x.atime..",".. x.mtime..",".. x.ctime)
     return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
 end,
 
 listxattr = function(self, path, size)
-    print("listxattr()")
-    local xa = fs_meta[path].xattr
-    if xa then
-        s = "\0"
-        for k,v in pairs(xa) do 
+    print("listxattr():path:"..path)
+    if fs_meta[path] then
+        local s = "\0"
+        for k,v in pairs(fs_meta[path].xattr) do 
             if type(v) == "string" then
                 s = v .. "\0" .. s
             end
@@ -496,10 +551,9 @@ listxattr = function(self, path, size)
 end,
 
 removexattr = function(self, path, name)
-    print("removexattr()")
-    local xa = fs_meta[path].xattr
-    if xa then
-        xa[name] = nil
+    print("removexattr():path:"..path..",name:"..name)
+    if fs_meta[path] then
+        fs_meta[path].xattr[name] = nil
         return 0
     else
         return ENOENT
@@ -507,10 +561,9 @@ removexattr = function(self, path, name)
 end,
 
 setxattr = function(self, path, name, val, flags)
-    print("setxattr()")
-    local xa = fs_meta[path].xattr
-    if xa then
-        xa[name] = val
+    print("setxattr():path:"..path..",name:"..name)
+    if fs_meta[path] then
+        fs_meta[path].xattr[name] = val
         return 0
     else
         return ENOENT
@@ -518,12 +571,11 @@ setxattr = function(self, path, name, val, flags)
 end,
 
 getxattr = function(self, path, name, size)
-    print("getxattr()")
-    local xa = fs_meta[path].xattr
-    if xa then
-        return 0, xa[name] or "" --not found is empty string
+    print("getxattr():path:"..path..",name:"..name)
+    if fs_meta[path] then
+        return fs_meta[path].xattr[name] or "" --not found is empty string
     else
-        return ENOENT, nil
+        return ENOENT, ""
     end
 end,
 
