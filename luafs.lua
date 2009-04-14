@@ -75,7 +75,7 @@ local function _bxor (a,b)
     return res
 end
 
---local function print () end
+local function print () end
 
 
 local ff = 2^32 - 1
