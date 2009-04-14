@@ -666,7 +666,9 @@ for i,w in ipairs(fuse_options) do
         debug = 1
     end
 end
-if not debug then function print () end end
+if debug == 0 then 
+    function print() end
+end
 
 for i,w in ipairs(options) do
     print("option:"..w)
