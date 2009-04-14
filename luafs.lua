@@ -305,7 +305,7 @@ end,
 ftruncate = function(self, path, size, obj)
     print("ftruncate():"..path..",size:"..size)
 
-    if size >= 0 then
+    if size < 0 then
         return EINVAL
     end
 
