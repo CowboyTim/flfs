@@ -110,8 +110,6 @@ static int xmp_getattr(const char *path, struct stat *st)
         /* Fill in fields not provided by Python lstat() */
         st->st_blksize= 4096;
         st->st_blocks= (st->st_size + 511)/512;
-
-        fprintf(stderr, "nlinks:%lu\n", (long)st->st_nlink);
     }
 
     EPILOGUE(11)
@@ -205,7 +203,7 @@ static int xmp_opendir(const char *path, struct fuse_file_info *fi)
     /* save the return as reference */
     fi->fh = luaL_ref(L_VM, LUA_REGISTRYINDEX);
 
-    fprintf(stderr,"***opendir():fh:%lu***\n", (long)fi->fh);
+    //fprintf(stderr,"***opendir():fh:%lu***\n", (long)fi->fh);
 
     EPILOGUE(1);
 
@@ -226,7 +224,7 @@ static int xmp_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     int done = FALSE;
     int i;
 
-    fprintf(stderr,"***readdir():fh:%lu***\n", (long)fi->fh);
+    //fprintf(stderr,"***readdir():fh:%lu***\n", (long)fi->fh);
 
     LOAD_FUNC("readdir")
     lua_pushstring(L_VM, path);
@@ -308,7 +306,7 @@ static int xmp_releasedir(const char *path, struct fuse_file_info *fi)
 {
     int res;
 
-    fprintf(stderr,"***releasedir():fh:%lu***\n", (long)fi->fh);
+    //fprintf(stderr,"***releasedir():fh:%lu***\n", (long)fi->fh);
 
     LOAD_FUNC("releasedir")
     lua_pushstring(L_VM, path);
