@@ -75,8 +75,6 @@ local function _bxor (a,b)
     return res
 end
 
-local function print () end
-
 
 local ff = 2^32 - 1
 local function _bnot(a) return ff - a end
@@ -635,14 +633,44 @@ statfs = function(self, path)
 end
 }
 
--- -s option is needed: no -s option makes fuse threaded, and the fuse.c
--- implementation doesn't appear to be threadsafe working yet..
-fuse_opt = { 'luafs', 'mnt', '-f', '-s', '-oallow_other'}
-
 if select('#', ...) < 2 then
     print(string.format("Usage: %s <fsname> <mount point> [fuse mount options]", arg[0]))
     os.exit(1)
 end
 
+-- -s option is needed: no -s option makes fuse threaded, and the fuse.c
+-- implementation doesn't appear to be threadsafe working yet..
+options = {
+    ...
+}
+fuse_options = {
+    '-s', 
+    '-f', 
+    '-oallow_other',
+    '-odefault_permissions',
+    '-ohard_remove', 
+    '-oentry_timeout=0',
+    '-onegative_timeout=0',
+    '-oattr_timeout=0',
+    '-ouse_ino',
+    '-oreaddir_ino'
+}
+
+for i,w in ipairs(fuse_options) do
+    table.insert(options, w)
+end
+
+local debug = 0
+for i,w in ipairs(fuse_options) do
+    if w == '-d'  then
+        debug = 1
+    end
+end
+if not debug then function print () end end
+
+for i,w in ipairs(options) do
+    print("option:"..w)
+end
+
 print("main()")
-fuse.main(luafs, {...})
+fuse.main(luafs, options)
