@@ -30,7 +30,7 @@ local ENOATTR      = -516
 local ENOTSUPP     = -524
 
 local BLOCKSIZE    = 4096
-local MAXINT       = 4294967295
+local MAXINT       = 2^32 -1
 
 local substr    = string.sub
 local floor     = math.floor
@@ -76,12 +76,11 @@ local function _bxor (a,b)
 end
 
 
-local ff = 2^32 - 1
-local function _bnot(a) return ff - a end
+local function _bnot(a) return MAXINT - a end
 
 local function _band(a,b) return ((a+b) - _bxor(a,b))/2 end
 
-local function _bor(a,b) return ff - _band(ff - a, ff - b) end
+local function _bor(a,b) return MAXINT - _band(MAXINT - a, MAXINT - b) end
 
 local function set_bits(mode, bits)
     return _bor(mode, bits)
@@ -247,6 +246,7 @@ write = function(self, path, buf, offset, obj)
     obj.f.ctime = time()
     obj.f.mtime = obj.f.ctime
 
+    -- BLOCKSIZE matches ours + offset falls on the start: just assign
     local data  = obj.f.contents
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
         data[floor(offset/BLOCKSIZE)] = buf
@@ -257,7 +257,7 @@ write = function(self, path, buf, offset, obj)
     local lindx = floor((offset + #buf - 1)/BLOCKSIZE)
     --print("write():"..path..",bufsize:"..#buf..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
 
-    -- fast and nice: same index
+    -- fast and nice: same index, but substr() is needed
     if findx == lindx then
         local a = offset % BLOCKSIZE
         local b = a + #buf + 1
@@ -266,6 +266,8 @@ write = function(self, path, buf, offset, obj)
         data[findx] = substr(data[findx],0,a) .. buf .. substr(data[findx],b)
         return #buf
     end
+
+    -- simple checks don't match: multiple blocks need to be adjusted
 
     -- start: will exist, as findx!=lindx
     local boffset = offset - findx*BLOCKSIZE
@@ -347,8 +349,10 @@ rename = function(self, from, to)
         fs_meta[from] = nil
 
         -- rename both parent's references to us
+        local p,e
+
         -- 'to'
-        local p,e = to:splitpath()
+        p, e = to:splitpath()
         fs_meta[p].directorylist[e] = fs_meta[to]
         fs_meta[p].ctime = time()
         fs_meta[p].mtime = fs_meta[p].ctime
@@ -363,12 +367,16 @@ rename = function(self, from, to)
         -- /usr and such.. ;-). for a plain file (or empty subdir), this is for
         -- isn't even executed (looped actually)
         --
-        for sub in pairs(fs_meta[to].directorylist or {}) do
-            ts= to   .. "/" .. sub
-            fs= from .. "/" .. sub
-            print("r:"..sub..",to:"..ts..",from:"..fs)
-            fs_meta[ts] = fs_meta[fs]
-            fs_meta[fs] = nil
+        if next(fs_meta[to].directorylist) then
+            local ts = to   .. "/"
+            local fs = from .. "/"
+            for sub in pairs(fs_meta[to].directorylist) do
+                ts = ts .. sub
+                fs = fs .. sub
+                print("r:"..sub..",to:"..ts..",from:"..fs)
+                fs_meta[ts] = fs_meta[fs]
+                fs_meta[fs] = nil
+            end 
         end
 
         return 0
@@ -661,7 +669,7 @@ for i,w in ipairs(fuse_options) do
 end
 
 local debug = 0
-for i,w in ipairs(fuse_options) do
+for i,w in ipairs(options) do
     if w == '-d'  then
         debug = 1
     end
