@@ -131,7 +131,6 @@ fs_meta["/"].directorylist = {}
 local luafs   = {
 
 rmdir = function(self, path)
-    print("rmdir():"..path)
     if next(fs_meta[path].directorylist) then
         return EEXIST 
     end
@@ -146,7 +145,6 @@ rmdir = function(self, path)
 end,
 
 mkdir = function(self, path, mode)
-    print('mkdir():'..path)
     if #path > 1024 then
         return ENAMETOOLONG
     end
@@ -164,12 +162,10 @@ mkdir = function(self, path, mode)
 end,
 
 opendir = function(self, path)
-    print("opendir():"..path)
     return 0, { t=fs_meta[path].directorylist, k=nil }
 end,
 
 readdir = function(self, path, offset, dir_fh)
-    print("readdir():"..path..",offset:"..offset)
     local dir_ent, dir_ent_meta = next(dir_fh.t, dir_fh.k)
     if dir_ent == nil then
         return 0, {}
@@ -184,7 +180,6 @@ readdir = function(self, path, offset, dir_fh)
 end,
 
 releasedir = function(self, path, dirent)
-    print("releasedir():"..path)
     dirent.k = nil
     dirent.t = nil
     -- eventually the last reference to it will disappear
@@ -192,7 +187,6 @@ releasedir = function(self, path, dirent)
 end,
 
 open = function(self, path, mode)
-    print("open():"..path)
     local entity = fs_meta[path]
     if entity then
         return 0, { f=entity }
@@ -202,7 +196,6 @@ open = function(self, path, mode)
 end,
 
 create = function(self, path, mode, flags)
-    print("create():"..path..",mode:"..mode..",flags:"..flags)
     local parent,file = path:splitpath()
     if mode == 32768 then
         mode = mk_mode(6,4,4)
@@ -217,7 +210,6 @@ create = function(self, path, mode, flags)
 end,
 
 read = function(self, path, size, offset, obj)
-    --print("read():"..path)
     local data  = obj.f.contents
     local findx = floor(offset/BLOCKSIZE)
     local lindx = floor((offset + size)/BLOCKSIZE)
@@ -241,7 +233,6 @@ read = function(self, path, size, offset, obj)
 end,
 
 write = function(self, path, buf, offset, obj)
-    --print("write():"..path)
     obj.f.size = obj.f.size > (offset + #buf) and obj.f.size or (offset + #buf)
     obj.f.ctime = time()
     obj.f.mtime = obj.f.ctime
@@ -292,18 +283,15 @@ write = function(self, path, buf, offset, obj)
 end,
 
 release = function(self, path, obj)
-    print("release():"..path)
     obj.f = nil
     return 0
 end,
 
 flush = function(self, path, obj)
-    print("flush():"..path)
     return 0
 end,
 
 ftruncate = function(self, path, size, obj)
-    print("ftruncate():"..path..",size:"..size)
 
     if size < 0 then
         return EINVAL
@@ -333,12 +321,10 @@ ftruncate = function(self, path, size, obj)
 end,
 
 truncate = function(self, path, size)
-    print("truncate():"..path)
     return self:ftruncate(path,size,{ f=fs_meta[path] })
 end,
 
 rename = function(self, from, to)
-    print("rename():from:"..from..",to:"..to)
 
     -- FUSE handles paths, e.g. a file being moved to a directory: the 'to'
     -- becomes that target directory + "/" + basename(from).
@@ -385,7 +371,6 @@ end,
 symlink = function(self, from, to)
     -- 'from' isn't used,.. that can be even from a seperate filesystem, e.g.
     -- when someone makes a symlink on this filesystem...
-    print("symlink():"..from..",to:"..to)
     local parent,file = to:splitpath()
     fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK)
     fs_meta[to].nlink  = 1
@@ -397,7 +382,6 @@ symlink = function(self, from, to)
 end,
 
 readlink = function(self, path)
-    print("readlink():"..path)
     local entity = fs_meta[path]
     if entity then
         return 0, fs_meta[path].target
@@ -407,7 +391,6 @@ readlink = function(self, path)
 end,
 
 link = function(self, from, to)
-    print("link():"..from..",to:"..to)
     local entity = fs_meta[from]
     if entity then
         -- update meta
@@ -430,7 +413,6 @@ link = function(self, from, to)
 end,
 
 unlink = function(self, path)
-    print("unlink():"..path)
 
     local entity = fs_meta[path]
     entity.nlink = entity.nlink - 1
@@ -456,7 +438,6 @@ mknod = function(self, path, mode, rdev)
     -- mkfifo is used to make a named pipe for instance.
     --
     -- FIXME: support 'plain' mknod too: S_IFBLK and S_IFCHR
-    print("mknod():"..path..",mode:"..mode)
     fs_meta[path]         = new_meta(mode)
     fs_meta[path].nlink   = 1
     fs_meta[path].dev     = rdev
@@ -469,7 +450,6 @@ mknod = function(self, path, mode, rdev)
 end,
 
 chown = function(self, path, uid, gid)
-    print("chown():"..path..",uid:"..uid,",gid:"..gid)
     local entity = fs_meta[path] 
     if entity then
 
@@ -496,7 +476,6 @@ chown = function(self, path, uid, gid)
 end,
 
 chmod = function(self, path, mode)
-    print("chmod():"..path..",mode:"..mode)
     local entity = fs_meta[path] 
     if entity then
         entity.mode  = mode
@@ -508,7 +487,6 @@ chmod = function(self, path, mode)
 end,
 
 utime = function(self, path, atime, mtime)
-    print("utime()")
     local entity = fs_meta[path] 
     if entity then
         entity.atime = atime
@@ -521,7 +499,6 @@ end,
 
 
 utimens = function(self, path, atime, mtime)
-    print("utimens():path"..path..",atime:"..atime..",mtime:"..mtime)
     local entity = fs_meta[path] 
     if entity then
         entity.atime = atime
@@ -533,7 +510,6 @@ utimens = function(self, path, atime, mtime)
 end,
 
 access = function(self, path, mode)
-    print("access():"..path..",mode:"..mode)
 --    local p = '/'
 --    for dir in string.gmatch(path, "[^/]+") do
 --        p = p .. dir
@@ -551,17 +527,14 @@ access = function(self, path, mode)
 end,
 
 fsync = function(self, path, isdatasync, obj)
-    print("fsync()")
     return 0
 end,
 
 fsyncdir = function(self, path, isdatasync, obj)
-    print("fsyncdir()")
     return 0
 end,
 
 fgetattr = function(self, path, obj)
-    print("fgetattr():"..path)
     local x = obj.f
     print("fgetattr():"..x.mode..",".. x.ino..",".. x.dev..",".. x.nlink..",".. x.uid..",".. x.gid..",".. x.size..",".. x.atime..",".. x.mtime..",".. x.ctime)
     return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
@@ -569,7 +542,6 @@ end,
 
 
 getattr = function(self, path)
-    print("getattr():"..path)
     if #path > 1024 then
         return ENAMETOOLONG
     end
@@ -588,7 +560,6 @@ getattr = function(self, path)
 end,
 
 listxattr = function(self, path, size)
-    print("listxattr():path:"..path)
     if fs_meta[path] then
         local s = "\0"
         for k,v in pairs(fs_meta[path].xattr) do 
@@ -603,7 +574,6 @@ listxattr = function(self, path, size)
 end,
 
 removexattr = function(self, path, name)
-    print("removexattr():path:"..path..",name:"..name)
     if fs_meta[path] then
         fs_meta[path].xattr[name] = nil
         return 0
@@ -613,7 +583,6 @@ removexattr = function(self, path, name)
 end,
 
 setxattr = function(self, path, name, val, flags)
-    print("setxattr():path:"..path..",name:"..name)
     if fs_meta[path] then
         fs_meta[path].xattr[name] = val
         return 0
@@ -623,7 +592,6 @@ setxattr = function(self, path, name, val, flags)
 end,
 
 getxattr = function(self, path, name, size)
-    print("getxattr():path:"..path..",name:"..name)
     if fs_meta[path] then
         return fs_meta[path].xattr[name] or "" --not found is empty string
     else
@@ -632,11 +600,25 @@ getxattr = function(self, path, name, size)
 end,
 
 statfs = function(self, path)
-    print("statfs()")
     local o = {bs=BLOCKSIZE,blocks=4096,bfree=1024,bavail=3072,bfiles=1024,bffree=1024}
     return 0, o.bs, o.blocks, o.bfree, o.bavail, o.bfiles, o.bffree
 end
 }
+
+-- loop over all the functions, and add a wrapper
+--
+for k, f in pairs(luafs) do
+    luafs[k] = function(self,...) 
+        if debug then
+            local d = {}
+            for i,v in ipairs(arg) do
+                if type(v) ~= 'table' then d[i] = v end
+            end
+            print("function:"..k.."(),args:"..table.concat(d, ","))
+        end
+        return f(self, unpack(arg))
+    end
+end
 
 if select('#', ...) < 2 then
     print(string.format("Usage: %s <fsname> <mount point> [fuse mount options]", arg[0]))
