@@ -339,50 +339,47 @@ end,
 
 rename = function(self, from, to)
     print("rename():from:"..from..",to:"..to)
-    if from == to then return 0 end
 
-    local entity = fs_meta[from]
-    if entity then
+    -- FUSE handles paths, e.g. a file being moved to a directory: the 'to'
+    -- becomes that target directory + "/" + basename(from).
 
-        -- rename main node
-        fs_meta[to]   = entity
-        fs_meta[from] = nil
+    -- rename main node
+    fs_meta[to]   = fs_meta[from]
+    fs_meta[from] = nil
 
-        -- rename both parent's references to us
-        local p,e
+    -- rename both parent's references to the renamed entity
+    local p,e
 
-        -- 'to'
-        p, e = to:splitpath()
-        fs_meta[p].directorylist[e] = fs_meta[to]
-        fs_meta[p].ctime = time()
-        fs_meta[p].mtime = fs_meta[p].ctime
-        -- 'from'
-        p,e = from:splitpath()
-        fs_meta[p].directorylist[e] = nil
-        fs_meta[p].ctime = time()
-        fs_meta[p].mtime = fs_meta[p].ctime
+    -- 'to'
+    p, e = to:splitpath()
+    fs_meta[p].directorylist[e] = fs_meta[to]
+    fs_meta[p].ctime = time()
+    fs_meta[p].mtime = fs_meta[p].ctime
 
-        -- rename all decendants, maybe not such a good idea to use this
-        -- mechanism, but don't forget, how many times does one rename e.g.
-        -- /usr and such.. ;-). for a plain file (or empty subdir), this is for
-        -- isn't even executed (looped actually)
-        --
-        if next(fs_meta[to].directorylist) then
-            local ts = to   .. "/"
-            local fs = from .. "/"
-            for sub in pairs(fs_meta[to].directorylist) do
-                ts = ts .. sub
-                fs = fs .. sub
-                print("r:"..sub..",to:"..ts..",from:"..fs)
-                fs_meta[ts] = fs_meta[fs]
-                fs_meta[fs] = nil
-            end 
-        end
+    -- 'from'
+    p,e = from:splitpath()
+    fs_meta[p].directorylist[e] = nil
+    fs_meta[p].ctime = time()
+    fs_meta[p].mtime = fs_meta[p].ctime
 
-        return 0
-    else
-        return ENOENT
+    -- rename all decendants, maybe not such a good idea to use this
+    -- mechanism, but don't forget, how many times does one rename e.g.
+    -- /usr and such.. ;-). for a plain file (or empty subdir), this is for
+    -- isn't even executed (looped actually)
+    --
+    if fs_meta[to].directorylist then
+        local ts = to   .. "/"
+        local fs = from .. "/"
+        for sub in pairs(fs_meta[to].directorylist) do
+            ts = ts .. sub
+            fs = fs .. sub
+            print("r:"..sub..",to:"..ts..",from:"..fs)
+            fs_meta[ts] = fs_meta[fs]
+            fs_meta[fs] = nil
+        end 
     end
+
+    return 0
 end,
 
 symlink = function(self, from, to)
