@@ -35,12 +35,13 @@ local MAXINT       = 2^32 -1
 local substr    = string.sub
 local floor     = math.floor
 local time      = os.time
+local concat    = table.concat
 
 local t = {}
 for i=1,BLOCKSIZE do
     table.insert(t, "\000")
 end
-local empty_block = table.concat(t)
+local empty_block = concat(t)
 
 local tab = {  -- tab[i+1][j+1] = xor(i, j) where i,j in (0-15)
   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, },
@@ -102,10 +103,8 @@ end
 
 local inode_start = 1
 
-function new_meta(mymode)
+local function new_meta(mymode, uid, gid)
     local t = time()
-
-    local uid,gid,pid,puid,pgid = fuse.context()
 
     inode_start = inode_start + 1
     return {
@@ -123,12 +122,13 @@ function new_meta(mymode)
     }
 end
 
+local uid,gid,pid,puid,pgid = fuse.context()
 local fs_meta = {
-    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR)
+    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid)
 }
 fs_meta["/"].directorylist = {}
 
-local luafs   = {
+luafs   = {
 
 rmdir = function(self, path)
     if next(fs_meta[path].directorylist) then
@@ -144,13 +144,13 @@ rmdir = function(self, path)
     return 0
 end,
 
-mkdir = function(self, path, mode)
+mkdir = function(self, path, mode, cuid, cgid)
     if #path > 1024 then
         return ENAMETOOLONG
     end
     local parent,subdir = path:splitpath()
     print("parentdir:"..parent)
-    fs_meta[path] = new_meta(mode + S_IFDIR)
+    fs_meta[path] = new_meta(mode + S_IFDIR, cuid, cgid)
     fs_meta[path].directorylist = {}
     fs_meta[parent].nlink = fs_meta[parent].nlink + 1
     fs_meta[parent].directorylist[subdir] = fs_meta[path]
@@ -195,12 +195,12 @@ open = function(self, path, mode)
     end
 end,
 
-create = function(self, path, mode, flags)
+create = function(self, path, mode, flags, cuid, cgid)
     local parent,file = path:splitpath()
     if mode == 32768 then
         mode = mk_mode(6,4,4)
     end
-    fs_meta[path] = new_meta(set_bits(mode, S_IFREG))
+    fs_meta[path] = new_meta(set_bits(mode, S_IFREG), cuid, cgid)
     fs_meta[path].nlink = 1
     fs_meta[path].contents = {}
     fs_meta[parent].directorylist[file] = fs_meta[path]
@@ -292,6 +292,10 @@ flush = function(self, path, obj)
 end,
 
 ftruncate = function(self, path, size, obj)
+    return self:truncate(path, size)
+end,
+
+truncate = function(self, path, size)
 
     if size < 0 then
         return EINVAL
@@ -303,7 +307,8 @@ ftruncate = function(self, path, size, obj)
     if size >= 2147483647 then
         return EFBIG
     end
-    local m = obj.f
+
+    local m = fs_meta[path]
 
     -- update meta information
     m.ctime = time()
@@ -317,11 +322,8 @@ ftruncate = function(self, path, size, obj)
         data[i] = nil
     end
     data[lindx] = substr(data[lindx] or "",0,size%BLOCKSIZE)
-    return 0
-end,
 
-truncate = function(self, path, size)
-    return self:ftruncate(path,size,{ f=fs_meta[path] })
+    return 0
 end,
 
 rename = function(self, from, to)
@@ -339,12 +341,14 @@ rename = function(self, from, to)
     -- 'to'
     p, e = to:splitpath()
     fs_meta[p].directorylist[e] = fs_meta[to]
+    fs_meta[p].nlink = fs_meta[p].nlink + 1
     fs_meta[p].ctime = time()
     fs_meta[p].mtime = fs_meta[p].ctime
 
     -- 'from'
     p,e = from:splitpath()
     fs_meta[p].directorylist[e] = nil
+    fs_meta[p].nlink = fs_meta[p].nlink - 1
     fs_meta[p].ctime = time()
     fs_meta[p].mtime = fs_meta[p].ctime
 
@@ -368,11 +372,11 @@ rename = function(self, from, to)
     return 0
 end,
 
-symlink = function(self, from, to)
+symlink = function(self, from, to, cuid, cgid)
     -- 'from' isn't used,.. that can be even from a seperate filesystem, e.g.
     -- when someone makes a symlink on this filesystem...
     local parent,file = to:splitpath()
-    fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK)
+    fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, cuid, cgid)
     fs_meta[to].nlink  = 1
     fs_meta[to].target = from
     fs_meta[parent].directorylist[file] = fs_meta[to]
@@ -432,13 +436,13 @@ unlink = function(self, path)
     return 0
 end,
 
-mknod = function(self, path, mode, rdev)
+mknod = function(self, path, mode, rdev, cuid, cgid)
     -- only called for non-symlinks, non-directories, non-files and links as
     -- those are handled by symlink, mkdir, create, link. This is called when
     -- mkfifo is used to make a named pipe for instance.
     --
     -- FIXME: support 'plain' mknod too: S_IFBLK and S_IFCHR
-    fs_meta[path]         = new_meta(mode)
+    fs_meta[path]         = new_meta(mode, cuid, cgid)
     fs_meta[path].nlink   = 1
     fs_meta[path].dev     = rdev
 
@@ -449,7 +453,7 @@ mknod = function(self, path, mode, rdev)
     return 0
 end,
 
-chown = function(self, path, uid, gid)
+chown = function(self, path, uid, gid, cuid, cgid)
     local entity = fs_meta[path] 
     if entity then
 
@@ -460,7 +464,6 @@ chown = function(self, path, uid, gid)
         --
         -- That's the reason why tests 141, 145, 149 and 153 of pjd fail
         -- btw...
-        local cuid,cgid,pid,puid,pgid = fuse.context()
         if cuid ~= 0 then
             if not (uid == MAXINT and gid == MAXINT) then
                 entity.mode = _band(entity.mode, _bnot(S_SID))
@@ -602,23 +605,8 @@ end,
 statfs = function(self, path)
     local o = {bs=BLOCKSIZE,blocks=4096,bfree=1024,bavail=3072,bfiles=1024,bffree=1024}
     return 0, o.bs, o.blocks, o.bfree, o.bavail, o.bfiles, o.bffree
-end
+end,
 }
-
--- loop over all the functions, and add a wrapper
---
-for k, f in pairs(luafs) do
-    luafs[k] = function(self,...) 
-        if debug then
-            local d = {}
-            for i,v in ipairs(arg) do
-                if type(v) ~= 'table' then d[i] = v end
-            end
-            print("function:"..k.."(),args:"..table.concat(d, ","))
-        end
-        return f(self, unpack(arg))
-    end
-end
 
 if select('#', ...) < 2 then
     print(string.format("Usage: %s <fsname> <mount point> [fuse mount options]", arg[0]))
@@ -643,6 +631,8 @@ fuse_options = {
     '-oreaddir_ino'
 }
 
+local config = {loopfile= "/var/tmp/test.lua"}
+
 for i,w in ipairs(fuse_options) do
     table.insert(options, w)
 end
@@ -657,9 +647,94 @@ if debug == 0 then
     function print() end
 end
 
+for k, f in pairs(luafs) do
+    luafs[k] = function(self,...) 
+        
+        -- debug?
+        if debug then
+            local d = {}
+            for i,v in ipairs(arg) do
+                if type(v) ~= 'table' then 
+                    d[i] = v 
+                else
+                    d[i] = "<ref>"
+                end
+            end
+            print("function:"..k.."(),args:"..concat(d, ","))
+        end
+        -- really call the function
+        return f(self, unpack(arg))
+    end
+end
+
 for i,w in ipairs(options) do
     print("option:"..w)
 end
 
+dofile(config["loopfile"])
+
+local meta_fh = io.open(config["loopfile"], "a+")
+
+--
+-- loop over all the functions and add a wrapper
+--
+local change_methods = {
+    rmdir       = true,
+    mkdir       = true,
+    create      = true,
+    mknod       = true,
+    setattr     = true,
+    setxattr    = true,
+    removexattr = true,
+    --write     = true,
+    truncate    = true,
+    link        = true,
+    unlink      = true,
+    symlink     = true,
+    chmod       = true,
+    chown       = true,
+    utime       = true,
+    utimens     = true,
+    rename      = true
+}
+local context_needing_methods = {
+    mkdir       = true,
+    create      = true,
+    mknod       = true,
+    symlink     = true,
+    chown       = true
+}
+for k, f in pairs(luafs) do
+    luafs[k] = function(self,...) 
+        
+        if change_methods[k] then
+
+            if context_needing_methods[k] then
+                arg[#arg+1], arg[#arg+2] = fuse.context()
+            end
+
+            local o = {}
+            for i,w in ipairs(arg) do
+                if type(arg[i]) ~= 'number' then
+                    o[i] = '"'..arg[i]..'"'
+                else 
+                    o[i] = arg[i]
+                end
+            end
+            local output = "luafs:"..k.."("..concat(o,",")..")\n"
+            meta_fh:write(output)
+            if debug then
+                meta_fh:flush()
+            end
+        end
+        
+
+        -- really call the function
+        return f(self, unpack(arg))
+    end
+end
+
+
+-- start the main fuse loop
 print("main()")
 fuse.main(luafs, options)
