@@ -103,9 +103,7 @@ end
 
 local inode_start = 1
 
-local function new_meta(mymode, uid, gid)
-    local t = time()
-
+local function new_meta(mymode, uid, gid, now)
     inode_start = inode_start + 1
     return {
         xattr = {[-1] = true},
@@ -116,21 +114,21 @@ local function new_meta(mymode, uid, gid)
         uid   = uid,
         gid   = gid,
         size  = 0,
-        atime = t,
-        mtime = t,
-        ctime = t
+        atime = now,
+        mtime = now,
+        ctime = now
     }
 end
 
 local uid,gid,pid,puid,pgid = fuse.context()
 local fs_meta = {
-    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid)
+    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 }
 fs_meta["/"].directorylist = {}
 
 luafs   = {
 
-rmdir = function(self, path)
+rmdir = function(self, path, ctime)
     if next(fs_meta[path].directorylist) then
         return EEXIST 
     end
@@ -138,24 +136,24 @@ rmdir = function(self, path)
     local parent,dir = path:splitpath()
     fs_meta[parent].nlink = fs_meta[parent].nlink - 1
     fs_meta[parent].directorylist[dir] = nil
-    fs_meta[parent].ctime = time()
-    fs_meta[parent].mtime = fs_meta[parent].ctime
+    fs_meta[parent].ctime = ctime
+    fs_meta[parent].mtime = ctime
     fs_meta[path] = nil
     return 0
 end,
 
-mkdir = function(self, path, mode, cuid, cgid)
+mkdir = function(self, path, mode, cuid, cgid, ctime)
     if #path > 1024 then
         return ENAMETOOLONG
     end
     local parent,subdir = path:splitpath()
     print("parentdir:"..parent)
-    fs_meta[path] = new_meta(mode + S_IFDIR, cuid, cgid)
+    fs_meta[path] = new_meta(mode + S_IFDIR, cuid, cgid, ctime)
     fs_meta[path].directorylist = {}
     fs_meta[parent].nlink = fs_meta[parent].nlink + 1
     fs_meta[parent].directorylist[subdir] = fs_meta[path]
-    fs_meta[parent].ctime = time()
-    fs_meta[parent].mtime = fs_meta[parent].ctime
+    fs_meta[parent].ctime = ctime
+    fs_meta[parent].mtime = ctime
 
     print("made dir, mode:"..fs_meta[path].mode)
     return 0
@@ -195,17 +193,17 @@ open = function(self, path, mode)
     end
 end,
 
-create = function(self, path, mode, flags, cuid, cgid)
+create = function(self, path, mode, flags, cuid, cgid, ctime)
     local parent,file = path:splitpath()
     if mode == 32768 then
         mode = mk_mode(6,4,4)
     end
-    fs_meta[path] = new_meta(set_bits(mode, S_IFREG), cuid, cgid)
+    fs_meta[path] = new_meta(set_bits(mode, S_IFREG), cuid, cgid, ctime)
     fs_meta[path].nlink = 1
     fs_meta[path].contents = {}
     fs_meta[parent].directorylist[file] = fs_meta[path]
-    fs_meta[parent].ctime = time()
-    fs_meta[parent].mtime = fs_meta[parent].ctime
+    fs_meta[parent].ctime = ctime
+    fs_meta[parent].mtime = ctime
     return 0, { f=fs_meta[path] }
 end,
 
@@ -232,13 +230,16 @@ read = function(self, path, size, offset, obj)
     return 0, str
 end,
 
-write = function(self, path, buf, offset, obj)
-    obj.f.size = obj.f.size > (offset + #buf) and obj.f.size or (offset + #buf)
-    obj.f.ctime = time()
-    obj.f.mtime = obj.f.ctime
+write = function(self, path, buf, offset, obj, ctime)
+
+    local entity = fs_meta[path]
+
+    entity.size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
+    entity.ctime = ctime
+    entity.mtime = ctime
 
     -- BLOCKSIZE matches ours + offset falls on the start: just assign
-    local data  = obj.f.contents
+    local data  = entity.contents
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
         data[floor(offset/BLOCKSIZE)] = buf
         return #buf
@@ -295,7 +296,7 @@ ftruncate = function(self, path, size, obj)
     return self:truncate(path, size)
 end,
 
-truncate = function(self, path, size)
+truncate = function(self, path, size, ctime)
 
     if size < 0 then
         return EINVAL
@@ -311,8 +312,8 @@ truncate = function(self, path, size)
     local m = fs_meta[path]
 
     -- update meta information
-    m.ctime = time()
-    m.mtime = m.ctime
+    m.ctime = ctime
+    m.mtime = ctime
     m.size  = size
 
     -- update contents
@@ -326,7 +327,7 @@ truncate = function(self, path, size)
     return 0
 end,
 
-rename = function(self, from, to)
+rename = function(self, from, to, ctime)
 
     -- FUSE handles paths, e.g. a file being moved to a directory: the 'to'
     -- becomes that target directory + "/" + basename(from).
@@ -342,15 +343,15 @@ rename = function(self, from, to)
     p, e = to:splitpath()
     fs_meta[p].directorylist[e] = fs_meta[to]
     fs_meta[p].nlink = fs_meta[p].nlink + 1
-    fs_meta[p].ctime = time()
-    fs_meta[p].mtime = fs_meta[p].ctime
+    fs_meta[p].ctime = ctime
+    fs_meta[p].mtime = ctime
 
     -- 'from'
     p,e = from:splitpath()
     fs_meta[p].directorylist[e] = nil
     fs_meta[p].nlink = fs_meta[p].nlink - 1
-    fs_meta[p].ctime = time()
-    fs_meta[p].mtime = fs_meta[p].ctime
+    fs_meta[p].ctime = ctime
+    fs_meta[p].mtime = ctime
 
     -- rename all decendants, maybe not such a good idea to use this
     -- mechanism, but don't forget, how many times does one rename e.g.
@@ -372,16 +373,16 @@ rename = function(self, from, to)
     return 0
 end,
 
-symlink = function(self, from, to, cuid, cgid)
+symlink = function(self, from, to, cuid, cgid, ctime)
     -- 'from' isn't used,.. that can be even from a seperate filesystem, e.g.
     -- when someone makes a symlink on this filesystem...
     local parent,file = to:splitpath()
-    fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, cuid, cgid)
+    fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, cuid, cgid, ctime)
     fs_meta[to].nlink  = 1
     fs_meta[to].target = from
     fs_meta[parent].directorylist[file] = fs_meta[to]
-    fs_meta[parent].ctime = time()
-    fs_meta[parent].mtime = fs_meta[parent].ctime
+    fs_meta[parent].ctime = ctime
+    fs_meta[parent].mtime = ctime
     return 0
 end,
 
@@ -394,11 +395,11 @@ readlink = function(self, path)
     end
 end,
 
-link = function(self, from, to)
+link = function(self, from, to, ctime)
     local entity = fs_meta[from]
     if entity then
         -- update meta
-        entity.ctime = time()
+        entity.ctime = ctime
         entity.nlink = entity.nlink + 1
 
         -- 'copy'
@@ -407,8 +408,8 @@ link = function(self, from, to)
         -- update the TO parent: add entry + change meta
         local toparent,e = to:splitpath()
         fs_meta[toparent].directorylist[e] = fs_meta[to]
-        fs_meta[toparent].ctime = time()
-        fs_meta[toparent].mtime = fs_meta[toparent].ctime
+        fs_meta[toparent].ctime = ctime
+        fs_meta[toparent].mtime = ctime
         
         return 0
     else
@@ -416,16 +417,16 @@ link = function(self, from, to)
     end
 end,
 
-unlink = function(self, path)
+unlink = function(self, path, ctime)
 
     local entity = fs_meta[path]
     entity.nlink = entity.nlink - 1
-    entity.ctime = time()
+    entity.ctime = ctime
 
     local p,e = path:splitpath()
     fs_meta[p].directorylist[e] = nil
-    fs_meta[p].ctime = time()
-    fs_meta[p].mtime = fs_meta[p].ctime
+    fs_meta[p].ctime = ctime
+    fs_meta[p].mtime = ctime
 
     -- nifty huh ;-).. : decrease links to the entry + delete *this*
     -- reference from the tree and the meta, other references will see the
@@ -436,24 +437,24 @@ unlink = function(self, path)
     return 0
 end,
 
-mknod = function(self, path, mode, rdev, cuid, cgid)
+mknod = function(self, path, mode, rdev, cuid, cgid, ctime)
     -- only called for non-symlinks, non-directories, non-files and links as
     -- those are handled by symlink, mkdir, create, link. This is called when
     -- mkfifo is used to make a named pipe for instance.
     --
     -- FIXME: support 'plain' mknod too: S_IFBLK and S_IFCHR
-    fs_meta[path]         = new_meta(mode, cuid, cgid)
+    fs_meta[path]         = new_meta(mode, cuid, cgid, ctime)
     fs_meta[path].nlink   = 1
     fs_meta[path].dev     = rdev
 
     local parent,file = path:splitpath()
     fs_meta[parent].directorylist[file] = fs_meta[path]
-    fs_meta[parent].ctime = time()
-    fs_meta[parent].mtime = fs_meta[parent].ctime
+    fs_meta[parent].ctime = ctime
+    fs_meta[parent].mtime = ctime
     return 0
 end,
 
-chown = function(self, path, uid, gid, cuid, cgid)
+chown = function(self, path, uid, gid, cuid, cgid, ctime)
     local entity = fs_meta[path] 
     if entity then
 
@@ -471,18 +472,18 @@ chown = function(self, path, uid, gid, cuid, cgid)
         end
         if uid ~= MAXINT then entity.uid = uid end
         if gid ~= MAXINT then entity.gid = gid end
-        entity.ctime = time()
+        entity.ctime = ctime
         return 0
     else
         return ENOENT
     end
 end,
 
-chmod = function(self, path, mode)
+chmod = function(self, path, mode, ctime)
     local entity = fs_meta[path] 
     if entity then
         entity.mode  = mode
-        entity.ctime = time()
+        entity.ctime = ctime
         return 0
     else
         return ENOENT
@@ -683,10 +684,9 @@ local change_methods = {
     mkdir       = true,
     create      = true,
     mknod       = true,
-    setattr     = true,
     setxattr    = true,
     removexattr = true,
-    --write     = true,
+    write       = true,
     truncate    = true,
     link        = true,
     unlink      = true,
@@ -712,13 +712,16 @@ for k, f in pairs(luafs) do
             if context_needing_methods[k] then
                 arg[#arg+1], arg[#arg+2] = fuse.context()
             end
+            arg[#arg+1] = time()
 
             local o = {}
             for i,w in ipairs(arg) do
-                if type(arg[i]) ~= 'number' then
-                    o[i] = '"'..arg[i]..'"'
-                else 
+                if type(arg[i]) == "number" then
                     o[i] = arg[i]
+                elseif type(arg[i]) == "string" then
+                    o[i] = string.format("%q", arg[i])
+                elseif type(arg[i]) == 'table' then
+                    o[i] = "{}"
                 end
             end
             local output = "luafs:"..k.."("..concat(o,",")..")\n"
