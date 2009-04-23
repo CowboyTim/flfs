@@ -88,7 +88,7 @@ local function set_bits(mode, bits)
 end
 
 function string:splitpath() 
-    local dir,file = self:match("(.-)([^:/\\]*)$") 
+    local dir,file = self:match("(.-)([^/\\]*)$") 
     dir = dir:match("(.-)[/\\]?$")
     if dir == '' then
         dir = "/"
@@ -195,6 +195,7 @@ end,
 
 create = function(self, path, mode, flags, cuid, cgid, ctime)
     local parent,file = path:splitpath()
+    print("parent:"..parent..",file:"..file)
     if mode == 32768 then
         mode = mk_mode(6,4,4)
     end
@@ -645,6 +646,7 @@ for i,w in ipairs(options) do
     end
 end
 if debug == 0 then 
+    say = print
     function print() end
 end
 
@@ -673,6 +675,8 @@ for i,w in ipairs(options) do
 end
 
 dofile(config["loopfile"])
+
+say("done reading "..config["loopfile"]) 
 
 local meta_fh = io.open(config["loopfile"], "a+")
 
@@ -714,21 +718,23 @@ for k, f in pairs(luafs) do
             end
             arg[#arg+1] = time()
 
-            local o = {}
-            for i,w in ipairs(arg) do
-                if type(arg[i]) == "number" then
-                    o[i] = arg[i]
-                elseif type(arg[i]) == "string" then
-                    o[i] = string.format("%q", arg[i])
-                elseif type(arg[i]) == 'table' then
-                    o[i] = "{}"
+            --if k ~= 'write' then
+                local o = {}
+                for i,w in ipairs(arg) do
+                    if type(arg[i]) == "number" then
+                        o[i] = arg[i]
+                    elseif type(arg[i]) == "string" then
+                        o[i] = string.format("%q", arg[i])
+                    elseif type(arg[i]) == 'table' then
+                        o[i] = "{}"
+                    end
                 end
-            end
-            local output = "luafs:"..k.."("..concat(o,",")..")\n"
-            meta_fh:write(output)
-            if debug then
-                meta_fh:flush()
-            end
+                local output = "luafs:"..k.."("..concat(o,",")..")\n"
+                meta_fh:write(output)
+                if debug then
+                    meta_fh:flush()
+                end
+            --end
         end
         
 
