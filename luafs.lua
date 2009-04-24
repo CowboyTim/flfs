@@ -608,6 +608,10 @@ statfs = function(self, path)
     local o = {bs=BLOCKSIZE,blocks=4096,bfree=1024,bavail=3072,bfiles=1024,bffree=1024}
     return 0, o.bs, o.blocks, o.bfree, o.bavail, o.bfiles, o.bffree
 end,
+
+metafile = "/var/tmp/test.lua",
+datadir  = "/var/tmp/luafs"
+
 }
 
 if select('#', ...) < 2 then
@@ -615,8 +619,10 @@ if select('#', ...) < 2 then
     os.exit(1)
 end
 
+--
 -- -s option is needed: no -s option makes fuse threaded, and the fuse.c
 -- implementation doesn't appear to be threadsafe working yet..
+--
 options = {
     ...
 }
@@ -633,7 +639,6 @@ fuse_options = {
     '-oreaddir_ino'
 }
 
-local config = {loopfile= "/var/tmp/test.lua"}
 
 for i,w in ipairs(fuse_options) do
     table.insert(options, w)
@@ -645,28 +650,30 @@ for i,w in ipairs(options) do
         debug = 1
     end
 end
+say = print
 if debug == 0 then 
-    say = print
     function print() end
 end
 
 for k, f in pairs(luafs) do
-    luafs[k] = function(self,...) 
-        
-        -- debug?
-        if debug then
-            local d = {}
-            for i,v in ipairs(arg) do
-                if type(v) ~= 'table' then 
-                    d[i] = v 
-                else
-                    d[i] = "<ref>"
+    if type(f) == 'function' then
+        luafs[k] = function(self,...) 
+            
+            -- debug?
+            if debug then
+                local d = {}
+                for i,v in ipairs(arg) do
+                    if type(v) ~= 'table' then 
+                        d[i] = v 
+                    else
+                        d[i] = "<ref>"
+                    end
                 end
+                print("function:"..k.."(),args:"..concat(d, ","))
             end
-            print("function:"..k.."(),args:"..concat(d, ","))
+            -- really call the function
+            return f(self, unpack(arg))
         end
-        -- really call the function
-        return f(self, unpack(arg))
     end
 end
 
@@ -674,11 +681,18 @@ for i,w in ipairs(options) do
     print("option:"..w)
 end
 
-dofile(config["loopfile"])
+--
+-- read in the state the filesystem was at umount
+--
+dofile(luafs.metafile)
+say("done reading "..luafs.metafile) 
 
-say("done reading "..config["loopfile"]) 
-
-local meta_fh = io.open(config["loopfile"], "a+")
+--
+-- open that state for further updates, 
+--
+-- FIXME: make a nice close upon destroy (umount and signals)
+-- 
+local meta_fh = io.open(luafs.metafile, "a+")
 
 --
 -- loop over all the functions and add a wrapper
@@ -708,35 +722,41 @@ local context_needing_methods = {
     symlink     = true,
     chown       = true
 }
-for k, f in pairs(luafs) do
+for k, _ in pairs(change_methods) do
+    local f = luafs[k]
     luafs[k] = function(self,...) 
         
-        if change_methods[k] then
-
-            if context_needing_methods[k] then
-                arg[#arg+1], arg[#arg+2] = fuse.context()
-            end
-            arg[#arg+1] = time()
-
-            --if k ~= 'write' then
-                local o = {}
-                for i,w in ipairs(arg) do
-                    if type(arg[i]) == "number" then
-                        o[i] = arg[i]
-                    elseif type(arg[i]) == "string" then
-                        o[i] = string.format("%q", arg[i])
-                    elseif type(arg[i]) == 'table' then
-                        o[i] = "{}"
-                    end
-                end
-                local output = "luafs:"..k.."("..concat(o,",")..")\n"
-                meta_fh:write(output)
-                if debug then
-                    meta_fh:flush()
-                end
-            --end
+        -- some methods need the fuse context, add that code here. 
+        if context_needing_methods[k] then
+            arg[#arg+1], arg[#arg+2] = fuse.context()
         end
-        
+
+        -- always add the time at the end, methods that change the metastate
+        -- usually need this to adjust the ctime
+        arg[#arg+1] = time()
+
+        -- persistency: make the lua function call
+        local o = {}
+        for i,w in ipairs(arg) do
+            if type(arg[i]) == "number" then
+                o[i] = arg[i]
+            elseif type(arg[i]) == "string" then
+                o[i] = string.format("%q", arg[i])
+            elseif type(arg[i]) == 'table' then
+                -- FIXME: This is a hack for the truncate/write methods that
+                -- need an object ref that represents the filehandle. For this
+                -- fast implementation of saving all write() to the metadata,
+                -- this is sufficient. For a better implementation, write()'s
+                -- will not even be in the meta state, but a stub will be.
+                o[i] = "{}"
+            end
+        end
+
+        -- ....and save it to the metafile
+        meta_fh:write("luafs:"..k.."("..concat(o,",")..")\n")
+        if debug then
+            meta_fh:flush()
+        end
 
         -- really call the function
         return f(self, unpack(arg))
@@ -744,6 +764,8 @@ for k, f in pairs(luafs) do
 end
 
 
+--
 -- start the main fuse loop
+--
 print("main()")
 fuse.main(luafs, options)
