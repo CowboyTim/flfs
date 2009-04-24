@@ -723,12 +723,15 @@ local context_needing_methods = {
     chown       = true
 }
 for k, _ in pairs(change_methods) do
-    local f = luafs[k]
+    local fusemethod  = luafs[k]
+    local fusecontext = fuse.context
+    local format      = string.format
+    local prefix      = "luafs:"..k.."("
     luafs[k] = function(self,...) 
         
         -- some methods need the fuse context, add that code here. 
         if context_needing_methods[k] then
-            arg[#arg+1], arg[#arg+2] = fuse.context()
+            arg[#arg+1], arg[#arg+2] = fusecontext()
         end
 
         -- always add the time at the end, methods that change the metastate
@@ -741,7 +744,7 @@ for k, _ in pairs(change_methods) do
             if type(arg[i]) == "number" then
                 o[i] = arg[i]
             elseif type(arg[i]) == "string" then
-                o[i] = string.format("%q", arg[i])
+                o[i] = format("%q", arg[i])
             elseif type(arg[i]) == 'table' then
                 -- FIXME: This is a hack for the truncate/write methods that
                 -- need an object ref that represents the filehandle. For this
@@ -753,13 +756,13 @@ for k, _ in pairs(change_methods) do
         end
 
         -- ....and save it to the metafile
-        meta_fh:write("luafs:"..k.."("..concat(o,",")..")\n")
+        meta_fh:write(prefix..concat(o,",")..")\n")
         if debug then
             meta_fh:flush()
         end
 
         -- really call the function
-        return f(self, unpack(arg))
+        return fusemethod(self, unpack(arg))
     end
 end
 
