@@ -37,12 +37,11 @@
 static pthread_rwlock_t vm_lock;
 static lua_State *L_VM = NULL;
 static int dispatch_table = LUA_REFNIL;
-static int pulse_freq = 5;
 
 #define min(x,y) (x > y ? y : x)
     
 #define LOAD_FUNC(x)    \
-    pthread_rwlock_rdlock(&vm_lock);\
+    pthread_rwlock_wrlock(&vm_lock);\
     lua_rawgeti(L_VM, LUA_REGISTRYINDEX, dispatch_table); \
     lua_pushstring(L_VM, (x));\
     lua_gettable(L_VM, -2);\
@@ -55,8 +54,8 @@ static int pulse_freq = 5;
     lua_pushvalue(L_VM, -2);\
 
 #define EPILOGUE(x) \
-    pthread_rwlock_unlock(&vm_lock);\
     lua_pop(L_VM, x+1);\
+    pthread_rwlock_unlock(&vm_lock);\
     
 #define obj_pcall(x, y, z) \
     res = lua_pcall(L_VM, x+1, y, z);\
@@ -68,19 +67,6 @@ static int pulse_freq = 5;
         EPILOGUE(1)\
         return -1;\
     }\
-
-static void l_signal(int i)
-{						/* assert(i==SIGALRM); */
-
-    int res;
-     
-    signal(i,SIG_DFL); /* reset */
-
-    LOAD_FUNC("pulse")
-    obj_pcall(0, 1, 0);
-    err_pcall(res);
-    EPILOGUE(1)
-}
 
 static int xmp_getattr(const char *path, struct stat *st)
 {
@@ -95,17 +81,17 @@ static int xmp_getattr(const char *path, struct stat *st)
 
     if (res == 0){
 
-        st->st_mode = lua_tointeger(L_VM, -10);
-        st->st_ino  = lua_tointeger(L_VM, -9);
-        st->st_rdev = lua_tointeger(L_VM, -8);
-        st->st_dev  = lua_tointeger(L_VM, -8);
-        st->st_nlink= lua_tointeger(L_VM, -7);
-        st->st_uid  = lua_tointeger(L_VM, -6);
-        st->st_gid  = lua_tointeger(L_VM, -5);
-        st->st_size = lua_tointeger(L_VM, -4);
-        st->st_atime= lua_tointeger(L_VM, -3);
-        st->st_mtime= lua_tointeger(L_VM, -2);
-        st->st_ctime= lua_tointeger(L_VM, -1);
+        st->st_mode  = lua_tointeger(L_VM, -10);
+        st->st_ino   = lua_tointeger(L_VM, -9);
+        st->st_rdev  = lua_tointeger(L_VM, -8);
+        st->st_dev   = st->st_rdev;
+        st->st_nlink = lua_tointeger(L_VM, -7);
+        st->st_uid   = lua_tointeger(L_VM, -6);
+        st->st_gid   = lua_tointeger(L_VM, -5);
+        st->st_size  = lua_tointeger(L_VM, -4);
+        st->st_atime = lua_tointeger(L_VM, -3);
+        st->st_mtime = lua_tointeger(L_VM, -2);
+        st->st_ctime = lua_tointeger(L_VM, -1);
 
         /* Fill in fields not provided by Python lstat() */
         st->st_blksize= 4096;
@@ -132,21 +118,24 @@ static int xmp_fgetattr(const char *path, struct stat *st,
 
     res = lua_tointeger(L_VM, -11);
 
-    st->st_mode = lua_tointeger(L_VM, -10);
-    st->st_ino  = lua_tointeger(L_VM, -9);
-    st->st_rdev = lua_tointeger(L_VM, -8);
-    st->st_dev  = lua_tointeger(L_VM, -8);
-    st->st_nlink= lua_tointeger(L_VM, -7);
-    st->st_uid  = lua_tointeger(L_VM, -6);
-    st->st_gid  = lua_tointeger(L_VM, -5);
-    st->st_size = lua_tointeger(L_VM, -4);
-    st->st_atime= lua_tointeger(L_VM, -3);
-    st->st_mtime= lua_tointeger(L_VM, -2);
-    st->st_ctime= lua_tointeger(L_VM, -1);
+    if (res == 0){
 
-    /* Fill in fields not provided by Python lstat() */
-    st->st_blksize= 4096;
-    st->st_blocks= (st->st_size + 511)/512;
+        st->st_mode  = lua_tointeger(L_VM, -10);
+        st->st_ino   = lua_tointeger(L_VM, -9);
+        st->st_rdev  = lua_tointeger(L_VM, -8);
+        st->st_dev   = st->st_rdev;
+        st->st_nlink = lua_tointeger(L_VM, -7);
+        st->st_uid   = lua_tointeger(L_VM, -6);
+        st->st_gid   = lua_tointeger(L_VM, -5);
+        st->st_size  = lua_tointeger(L_VM, -4);
+        st->st_atime = lua_tointeger(L_VM, -3);
+        st->st_mtime = lua_tointeger(L_VM, -2);
+        st->st_ctime = lua_tointeger(L_VM, -1);
+
+        /* Fill in fields not provided by Python lstat() */
+        st->st_blksize= 4096;
+        st->st_blocks= (st->st_size + 511)/512;
+    }
 
     EPILOGUE(11);
 
@@ -203,8 +192,6 @@ static int xmp_opendir(const char *path, struct fuse_file_info *fi)
     /* save the return as reference */
     fi->fh = luaL_ref(L_VM, LUA_REGISTRYINDEX);
 
-    //fprintf(stderr,"***opendir():fh:%lu***\n", (long)fi->fh);
-
     EPILOGUE(1);
 
     return res;
@@ -223,8 +210,6 @@ static int xmp_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     int cnt;
     int done = FALSE;
     int i;
-
-    //fprintf(stderr,"***readdir():fh:%lu***\n", (long)fi->fh);
 
     LOAD_FUNC("readdir")
     lua_pushstring(L_VM, path);
@@ -299,14 +284,13 @@ static int xmp_fsyncdir(const char *path, int isdatasync, struct fuse_file_info 
     err_pcall(res);
     res = lua_tointeger(L_VM, -1);
     EPILOGUE(1);
+
     return res;
 }
 
 static int xmp_releasedir(const char *path, struct fuse_file_info *fi)
 {
     int res;
-
-    //fprintf(stderr,"***releasedir():fh:%lu***\n", (long)fi->fh);
 
     LOAD_FUNC("releasedir")
     lua_pushstring(L_VM, path);
@@ -316,6 +300,7 @@ static int xmp_releasedir(const char *path, struct fuse_file_info *fi)
     err_pcall(res);
     res = lua_tointeger(L_VM, -1);
     EPILOGUE(1);
+
     return res;
 }
 
@@ -331,7 +316,6 @@ static int xmp_mknod(const char *path, mode_t mode, dev_t rdev)
     obj_pcall(3, 1, 0);
     err_pcall(res);
     res = lua_tointeger(L_VM, -1);
-
     EPILOGUE(1);
 
     return res;
@@ -347,7 +331,6 @@ static int xmp_mkdir(const char *path, mode_t mode)
     obj_pcall(2, 1, 0);
     err_pcall(res);
     res = lua_tointeger(L_VM, -1);
-
     EPILOGUE(1);
 
     return res;
@@ -677,6 +660,27 @@ static int xmp_fsync(const char *path, int isdatasync,
     return res;
 }
 
+/* Not yet tested, shouldn't know how */
+static int xmp_bmap(const char *path, size_t blocksize,
+                     uint64_t *idx)
+{
+    int res;
+
+    LOAD_FUNC("bmap")
+    lua_pushstring(L_VM, path);
+    lua_pushnumber(L_VM, blocksize); 
+    lua_pushnumber(L_VM, (int64_t)idx); 
+    obj_pcall(3, 1, 0);
+    err_pcall(res);
+    res = lua_tointeger(L_VM, -1);
+    EPILOGUE(1);
+
+    return res;
+}
+
+/* FIXME: This void * t is normally from init(), however, that's not yet
+ *        implemented 
+ */
 static int xmp_destroy(void * t)
 {
     int res;
@@ -804,17 +808,9 @@ static struct fuse_operations xmp_oper = {
     .removexattr         = xmp_removexattr,
     #endif
     .utimens             = xmp_utimens,
-    .destroy             = xmp_destroy
+    .destroy             = xmp_destroy,
+    .bmap                = xmp_bmap
 };
-
-static xmp_alarm(lua_State *L)
-{
-    
-    int freq = lua_tointeger(L, -1);
-    signal(SIGALRM,l_signal);
-    alarm(freq);
-    return 0;
-}
 
 static xmp_main(lua_State *L)
 {
@@ -828,14 +824,6 @@ static xmp_main(lua_State *L)
     int i;
     
     if (argc < 2) luaL_error(L, "check parameter fusemount parameter table");
-
-    #if 0
-    lua_pushstring(L, "pulse_freq");
-    lua_gettable(L, 1);
-    pulse_freq = lua_tointeger(L,-1);
-    lua_pop(L,1);
-    if (pulse_freq == 0) pulse_freq = 10;
-    #endif
 
     /*
      * save dispatch table for future reference by C program
@@ -852,13 +840,6 @@ static xmp_main(lua_State *L)
     }
     argv[i] = NULL;
 
-#if 0
-    if (pulse_freq > 0) {
-        signal(SIGALRM,l_signal);
-        alarm(pulse_freq);
-    }
-#endif
-    
     /*
      * hand over to fuse loop
      */
@@ -874,10 +855,6 @@ static xmp_main(lua_State *L)
      * discard reference to dispatch_table
      */
     luaL_unref(L, LUA_REGISTRYINDEX, dispatch_table);
-
-    #if 0
-    signal(SIGALRM, SIG_DFL);
-    #endif
 
     return 0;
 }
@@ -896,10 +873,9 @@ static int xmp_get_context(lua_State *L)
 }
 
 static const luaL_reg Rm[] = {
-	{ "main",	xmp_main},
-	{ "alarm",	xmp_alarm},
-	{ "context",xmp_get_context},
-	{ NULL,		NULL	}
+	{ "main"    , xmp_main        } , 
+	{ "context" , xmp_get_context } , 
+	{ NULL      , NULL	          }
 };
 
 LUA_API int luaopen_fuse(lua_State *L)
