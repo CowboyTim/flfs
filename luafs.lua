@@ -545,6 +545,10 @@ fgetattr = function(self, path, obj)
     return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
 end,
 
+destroy = function(self)
+    self.meta_fh:close()
+    return 0
+end,
 
 getattr = function(self, path)
     if #path > 1024 then
@@ -614,16 +618,14 @@ datadir  = "/var/tmp/luafs"
 
 }
 
-if select('#', ...) < 2 then
-    print(string.format("Usage: %s <fsname> <mount point> [fuse mount options]", arg[0]))
-    os.exit(1)
-end
-
+--
+-- commandline option parsing/checking section
 --
 -- -s option is needed: no -s option makes fuse threaded, and the fuse.c
 -- implementation doesn't appear to be threadsafe working yet..
 --
 options = {
+    'luafs',
     ...
 }
 fuse_options = {
@@ -639,11 +641,29 @@ fuse_options = {
     '-oreaddir_ino'
 }
 
-
 for i,w in ipairs(fuse_options) do
     table.insert(options, w)
 end
 
+-- check the mountpoint
+require "lfs"
+local here = lfs.currentdir()
+if not lfs.chdir(options[2]) then
+    print("mountpoint "..options[2].." does not exist")
+    os.exit(1)
+end
+lfs.chdir(here)
+
+-- simple options check
+if select('#', ...) < 1 then
+    print(string.format("Usage: %s <mount point> [fuse mount options]", arg[0]))
+    os.exit(1)
+end
+
+
+--
+-- debugging section
+--
 local debug = 0
 for i,w in ipairs(options) do
     if w == '-d'  then
@@ -688,11 +708,17 @@ dofile(luafs.metafile)
 say("done reading "..luafs.metafile) 
 
 --
--- open that state for further updates, 
+-- open that state for further updates, create if it doesn't exist
 --
 -- FIXME: make a nice close upon destroy (umount and signals)
 -- 
-local meta_fh = io.open(luafs.metafile, "a+")
+local meta_fh = io.open(luafs.metafile, "r")
+if not meta_fh then
+    meta_fh = io.open(luafs.metafile, "w")
+end
+meta_fh:close()
+meta_fh = io.open(luafs.metafile, "a+")
+luafs.meta_fh = meta_fh
 
 --
 -- loop over all the functions and add a wrapper
@@ -727,6 +753,7 @@ for k, _ in pairs(change_methods) do
     local fusecontext = fuse.context
     local format      = string.format
     local prefix      = "luafs:"..k.."("
+    local meta_fh     = luafs.meta_fh
     luafs[k] = function(self,...) 
         
         -- some methods need the fuse context, add that code here. 
