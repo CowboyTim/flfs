@@ -36,6 +36,7 @@ local substr    = string.sub
 local floor     = math.floor
 local time      = os.time
 local concat    = table.concat
+local format    = string.format
 
 local t = {}
 for i=1,BLOCKSIZE do
@@ -121,12 +122,16 @@ local function new_meta(mymode, uid, gid, now)
 end
 
 local uid,gid,pid,puid,pgid = fuse.context()
-local fs_meta = {
+fs_meta = {
     ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 }
 fs_meta["/"].directorylist = {}
 
 luafs   = {
+
+--init = function(self, connection_info)
+--    return {}
+--end,
 
 rmdir = function(self, path, ctime)
     if next(fs_meta[path].directorylist) then
@@ -547,6 +552,11 @@ end,
 
 destroy = function(self)
     self.meta_fh:close()
+    self:serializemeta()
+    return 0
+end,
+
+bmap = function(self, path, blocksize, index)
     return 0
 end,
 
@@ -613,6 +623,70 @@ statfs = function(self, path)
     return 0, o.bs, o.blocks, o.bfree, o.bavail, o.bfiles, o.bffree
 end,
 
+serializemeta = function(self)
+    local inode = {}
+    local lines = {}
+    local new_meta_fh = io.open(self.metafile..'.new', 'w')
+    for k,e in pairs(fs_meta) do
+        local prefix = 'fs_meta["'..k..'"]'
+        if inode[e.ino] then
+            -- just add a link
+            new_meta_fh:write(prefix,' = fs_meta["',inode[e.ino],'"]\n')
+        else
+            inode[e.ino] = k
+
+            -- metadata:xattr
+            local xattr_str = {}
+            local meta_str  = {}
+            for x,v in pairs(e.xattr) do
+                if type(v) == 'boolean' and v == true then
+                    table.insert(xattr_str, '["'..x..'"]=true')
+                    break
+                end
+                if type(v) == 'boolean' and v == false then
+                    table.insert(xattr_str, '["'..x..'"]=false')
+                    break
+                end
+                table.insert(xattr_str, '["'..x..'"]='..format('%q',v))
+            end
+            table.insert(meta_str, 'xattr={'..concat(xattr_str, ',')..'}')
+
+            -- regular values + symlink target
+            for key, value in pairs(e) do
+                if type(value) == "number" then
+                    table.insert(meta_str, key..' = '..value)
+                elseif type(value) == "string" then
+                    table.insert(meta_str, key..' = '..format("%q", value))
+                end
+            end
+
+            new_meta_fh:write(prefix,' = {', concat(meta_str, ","),'}\n')
+
+
+            -- directorylist
+            if e.directorylist then
+                local t = {}
+                for d, _ in pairs(e.directorylist) do
+                    table.insert(t, '["'..d..'"]=true')
+                end
+                new_meta_fh:write(prefix,'.directorylist = {',concat(t, ','),'}\n')
+            end
+
+            -- contents
+            if e.contents then
+                new_meta_fh:write(prefix,'.contents = {}\n')
+                for i, data in pairs(e.contents) do
+                    new_meta_fh:write(prefix,'.contents[',i,'] = ',format("%q", data),"\n")
+                end
+            end
+        
+            
+        end
+    end
+    new_meta_fh:close()
+    return lines
+end,
+
 metafile = "/var/tmp/test.lua",
 datadir  = "/var/tmp/luafs"
 
@@ -621,8 +695,8 @@ datadir  = "/var/tmp/luafs"
 --
 -- commandline option parsing/checking section
 --
--- -s option is needed: no -s option makes fuse threaded, and the fuse.c
--- implementation doesn't appear to be threadsafe working yet..
+-- -s option: single threaded. multithreaded also works, but no performance
+-- gain (yet), in fact, it's slower.
 --
 options = {
     'luafs',
@@ -752,7 +826,6 @@ local context_needing_methods = {
 for k, _ in pairs(change_methods) do
     local fusemethod  = luafs[k]
     local fusecontext = fuse.context
-    local format      = string.format
     local prefix      = "luafs:"..k.."("
     local meta_fh     = luafs.meta_fh
     luafs[k] = function(self,...) 
