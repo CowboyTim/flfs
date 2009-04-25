@@ -677,6 +677,19 @@ static int xmp_fsync(const char *path, int isdatasync,
     return res;
 }
 
+static int xmp_destroy(void * t)
+{
+    int res;
+
+    LOAD_FUNC("destroy")
+    obj_pcall(0, 1, 0);
+    err_pcall(res);
+    res = lua_tointeger(L_VM, -1);
+    EPILOGUE(1);
+
+    return res;
+}
+
 #ifdef HAVE_SETXATTR
 /* xattr operations are optional and can safely be left unimplemented */
 static int xmp_setxattr(const char *path, const char *name, const char *value,
@@ -754,43 +767,44 @@ static int xmp_removexattr(const char *path, const char *name)
 #endif /* HAVE_SETXATTR */
 
 static struct fuse_operations xmp_oper = {
-    .getattr	= xmp_getattr,
-    .fgetattr	= xmp_fgetattr,
-    .access	= xmp_access,
-    .readlink	= xmp_readlink,
-    .readdir	= xmp_readdir,
-    .opendir	= xmp_opendir,
-    .fsyncdir    = xmp_fsyncdir,
-    .releasedir	= xmp_releasedir,
-#if 0
-#endif
-    .mknod	= xmp_mknod,
-    .mkdir	= xmp_mkdir,
-    .symlink	= xmp_symlink,
-    .unlink	= xmp_unlink,
-    .rmdir	= xmp_rmdir,
-    .rename	= xmp_rename,
-    .link	= xmp_link,
-    .chmod	= xmp_chmod,
-    .chown	= xmp_chown,
-    .truncate	= xmp_truncate,
-    .ftruncate	= xmp_ftruncate,
-    .utime	= xmp_utime,
-    .create	= xmp_create,
-    .open	= xmp_open,
-    .read	= xmp_read,
-    .write	= xmp_write,
-    .statfs	= xmp_statfs,
-    .release	= xmp_release,
-    .flush	= xmp_flush,
-    .fsync	= xmp_fsync,
-#ifdef HAVE_SETXATTR
-    .setxattr	= xmp_setxattr,
-    .getxattr	= xmp_getxattr,
-    .listxattr	= xmp_listxattr,
-    .removexattr= xmp_removexattr,
-#endif
-    .utimens= xmp_utimens,
+    .getattr             = xmp_getattr,
+    .fgetattr            = xmp_fgetattr,
+    .access              = xmp_access,
+    .readlink            = xmp_readlink,
+    .readdir             = xmp_readdir,
+    .opendir             = xmp_opendir,
+    .fsyncdir            = xmp_fsyncdir,
+    .releasedir          = xmp_releasedir,
+    #if 0
+    #endif
+    .mknod               = xmp_mknod,
+    .mkdir               = xmp_mkdir,
+    .symlink             = xmp_symlink,
+    .unlink              = xmp_unlink,
+    .rmdir               = xmp_rmdir,
+    .rename              = xmp_rename,
+    .link                = xmp_link,
+    .chmod               = xmp_chmod,
+    .chown               = xmp_chown,
+    .truncate            = xmp_truncate,
+    .ftruncate           = xmp_ftruncate,
+    .utime               = xmp_utime,
+    .create              = xmp_create,
+    .open                = xmp_open,
+    .read                = xmp_read,
+    .write               = xmp_write,
+    .statfs              = xmp_statfs,
+    .release             = xmp_release,
+    .flush               = xmp_flush,
+    .fsync               = xmp_fsync,
+    #ifdef HAVE_SETXATTR
+    .setxattr            = xmp_setxattr,
+    .getxattr            = xmp_getxattr,
+    .listxattr           = xmp_listxattr,
+    .removexattr         = xmp_removexattr,
+    #endif
+    .utimens             = xmp_utimens,
+    .destroy             = xmp_destroy
 };
 
 static xmp_alarm(lua_State *L)
