@@ -702,12 +702,6 @@ for i,w in ipairs(options) do
 end
 
 --
--- read in the state the filesystem was at umount
---
-dofile(luafs.metafile)
-say("done reading "..luafs.metafile) 
-
---
 -- open that state for further updates, create if it doesn't exist
 --
 -- FIXME: make a nice close upon destroy (umount and signals)
@@ -719,6 +713,13 @@ end
 meta_fh:close()
 meta_fh = io.open(luafs.metafile, "a+")
 luafs.meta_fh = meta_fh
+
+--
+-- read in the state the filesystem was at umount
+--
+dofile(luafs.metafile)
+say("done reading "..luafs.metafile) 
+
 
 --
 -- loop over all the functions and add a wrapper
