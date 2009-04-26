@@ -687,8 +687,8 @@ serializemeta = function(self)
     return lines
 end,
 
-metafile = "/var/tmp/test.lua",
-datadir  = "/var/tmp/luafs"
+metafile = "/home/tim/tmp/fs/test.lua",
+datadir  = "/home/tim/tmp/fs/luafs"
 
 }
 
@@ -783,17 +783,18 @@ end
 local meta_fh = io.open(luafs.metafile, "r")
 if not meta_fh then
     meta_fh = io.open(luafs.metafile, "w")
+else
+    --
+    -- read in the state the filesystem was at umount
+    --
+    for l in meta_fh:lines() do
+        assert(loadstring(l))()
+    end
+    say("done reading metadata from "..luafs.metafile) 
 end
 meta_fh:close()
 meta_fh = io.open(luafs.metafile, "a+")
 luafs.meta_fh = meta_fh
-
---
--- read in the state the filesystem was at umount
---
-dofile(luafs.metafile)
-say("done reading "..luafs.metafile) 
-
 
 --
 -- loop over all the functions and add a wrapper
