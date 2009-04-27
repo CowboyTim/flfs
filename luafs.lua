@@ -36,11 +36,12 @@ local substr    = string.sub
 local floor     = math.floor
 local time      = os.time
 local concat    = table.concat
+local arrayadd  = table.insert
 local format    = string.format
 
 local t = {}
 for i=1,BLOCKSIZE do
-    table.insert(t, "\000")
+    arrayadd(t, "\000")
 end
 local empty_block = concat(t)
 
@@ -103,6 +104,14 @@ local function mk_mode(owner, group, world, sticky)
 end
 
 local inode_start = 1
+local block_nr  = 0
+
+local function getnextblocknr (self)
+    block_nr = block_nr + 1
+    return block_nr
+end
+
+
 
 local function new_meta(mymode, uid, gid, now)
     inode_start = inode_start + 1
@@ -207,6 +216,7 @@ create = function(self, path, mode, flags, cuid, cgid, ctime)
     fs_meta[path] = new_meta(set_bits(mode, S_IFREG), cuid, cgid, ctime)
     fs_meta[path].nlink = 1
     fs_meta[path].contents = {}
+    fs_meta[path].blockmap = {}
     fs_meta[parent].directorylist[file] = fs_meta[path]
     fs_meta[parent].ctime = ctime
     fs_meta[parent].mtime = ctime
@@ -215,78 +225,111 @@ end,
 
 read = function(self, path, size, offset, obj)
     local data  = obj.f.contents
+    local map   = obj.f.blockmap
     local findx = floor(offset/BLOCKSIZE)
     local lindx = floor((offset + size)/BLOCKSIZE)
-    --print("read():"..path..",bufsize:"..size..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
     if findx == lindx then
-        return 0, substr(data[findx],offset % BLOCKSIZE,offset%BLOCKSIZE+size)
+        local b = self:_getblock(data, findx, map[findx]) 
+        return 0, substr(b,offset % BLOCKSIZE,offset%BLOCKSIZE+size)
     end
-    local str = ""
+    local str = {}
     for i=findx,lindx-1 do
-        if not data[i] then 
-            str = str .. empty_block
-        else
-            print("read():blockI:"..i..",data#:"..#data[i])
-            str = str .. data[i]
-        end
+        arrayadd(str, self:_getblock(data, i, map[i]))
     end
-    --print("read():block lindx:"..lindx..",data#:"..#(data[lindx] or ""))
-    str = str .. substr(data[lindx] or empty_block,0,size - #str)
-    --print("read():strlen:"..#str)
-    return 0, str
+    arrayadd(str, substr(self:_getblock(data, lindx, map[lindx]),0,offset%BLOCKSIZE+size))
+    return 0, concat(str)
 end,
 
-write = function(self, path, buf, offset, obj, ctime)
+_getblock = function(self, data, i, blocknr)
+
+    if not data[i] and blocknr ~= nil then
+        print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>'))
+        fh = io.open(self.datadir.."/"..blocknr, 'r')
+        local a = fh:read(BLOCKSIZE)
+        fh:close()
+
+        print("_getblock|return:"..#a)
+        if a and #a then
+            data[i] = a
+        end
+    end
+    return data[i] or empty_block
+end,
+
+write = function(self, path, buf, offset, obj)
 
     local entity = fs_meta[path]
-
-    entity.size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
-    entity.ctime = ctime
-    entity.mtime = ctime
+    local data   = entity.contents
+    local dirty  = {}
+    local findx  = floor(offset/BLOCKSIZE)
 
     -- BLOCKSIZE matches ours + offset falls on the start: just assign
-    local data  = entity.contents
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
-        data[floor(offset/BLOCKSIZE)] = buf
-        return #buf
+        data[findx]  = buf
+        dirty[findx] = true
+    else
+        local lindx = floor((offset + #buf - 1)/BLOCKSIZE)
+
+        -- fast and nice: same index, but substr() is needed
+        if findx == lindx then
+            local a = offset % BLOCKSIZE
+            local b = a + #buf + 1
+
+            data[findx]  = data[findx] or empty_block
+            data[findx]  = substr(data[findx],0,a) .. buf .. substr(data[findx],b)
+
+            dirty[findx] = true
+        else
+            -- simple checks don't match: multiple blocks need to be adjusted.
+            -- I'll do that in 3 steps:
+
+            -- start: will exist, as findx!=lindx
+            local boffset = offset - findx*BLOCKSIZE
+            local a,b = 0,BLOCKSIZE - boffset
+            data[findx]  = substr(data[findx] or empty_block, 0, boffset) .. substr(buf, a, b)
+            dirty[findx] = true
+
+            -- middle: doesn't necessarily have to exist
+            for i=findx+1,lindx-1 do
+                a, b = b + 1, b + 1 + BLOCKSIZE
+                data[i] = substr(buf, a, b)
+                dirty[i] = true
+            end
+
+            -- end: maybe exist, as findx!=lindx, and not ending on blockboundary
+            a, b = b + 1, b + 1 + BLOCKSIZE
+            data[lindx]  = substr(buf, a, b) .. substr(data[lindx] or empty_block, b)
+            dirty[lindx] = true
+
+        end
     end
 
-    local findx = floor(offset/BLOCKSIZE)
-    local lindx = floor((offset + #buf - 1)/BLOCKSIZE)
-    --print("write():"..path..",bufsize:"..#buf..",offset:"..offset..",findx:"..findx..",lindx:"..lindx)
+    -- rewrite all blocks to disk
+    for i, _ in pairs(dirty) do
+        dirty[i] = getnextblocknr()
 
-    -- fast and nice: same index, but substr() is needed
-    if findx == lindx then
-        local a = offset % BLOCKSIZE
-        local b = a + #buf + 1
-        --print("write():a:"..a..",b:"..b)
-        data[findx] = data[findx] or empty_block
-        data[findx] = substr(data[findx],0,a) .. buf .. substr(data[findx],b)
-        return #buf
+        fh = io.open(self.datadir.."/"..dirty[i], 'w')
+        fh:write(data[i])
+        fh:close()
     end
 
-    -- simple checks don't match: multiple blocks need to be adjusted
-
-    -- start: will exist, as findx!=lindx
-    local boffset = offset - findx*BLOCKSIZE
-    local a,b = 0,BLOCKSIZE - boffset
-    data[findx] = substr(data[findx] or empty_block, 0, boffset) .. substr(buf, a, b)
-
-    --print("write():a:"..a..",b:"..b..",data[findx]:"..data[findx])
-
-    -- middle: doesn't necessarily have to exist
-    for i=findx+1,lindx-1 do
-        a, b = b + 1, b + 1 + BLOCKSIZE
-        data[i] = substr(buf, a, b)
-        print("write():a:"..a..",b:"..b..",i:"..i..",data[i]:"..data[i])
+    -- adjust the metadata in the journal
+    for i, _ in pairs(dirty) do
+        local size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
+        self:_setblock(path, i, dirty[i], size)
     end
-
-    -- end: maybe exist, as findx!=lindx, and not ending on blockboundary
-    a, b = b + 1, b + 1 + BLOCKSIZE
-    data[lindx] = substr(buf, a, b) .. substr(data[lindx] or empty_block, b)
-    --print("write():a:"..a..",b:"..b..",data[lindx]:"..data[lindx])
 
     return #buf
+end,
+
+_setblock = function(self, path, i, bnr, size, ctime)
+    local e = fs_meta[path]
+    e.blockmap[i] = bnr
+    e.size        = size
+    e.ctime       = ctime
+    e.mtime       = ctime
+    block_nr      = bnr -- kindof 'dirty' but the journal will be correct
+    return 0
 end,
 
 release = function(self, path, obj)
@@ -325,10 +368,12 @@ truncate = function(self, path, size, ctime)
     -- update contents
     local lindx = floor(size/BLOCKSIZE)
     local data  = m.contents
+    local map   = m.blockmap
     for i=lindx+1,#data do
         data[i] = nil
+        map[i]  = nil
     end
-    data[lindx] = substr(data[lindx] or "",0,size%BLOCKSIZE)
+    data[lindx] = substr(data[lindx] or empty_block,0,size%BLOCKSIZE)
 
     return 0
 end,
@@ -640,23 +685,23 @@ serializemeta = function(self)
             local meta_str  = {}
             for x,v in pairs(e.xattr) do
                 if type(v) == 'boolean' and v == true then
-                    table.insert(xattr_str, '["'..x..'"]=true')
+                    arrayadd(xattr_str, '["'..x..'"]=true')
                     break
                 end
                 if type(v) == 'boolean' and v == false then
-                    table.insert(xattr_str, '["'..x..'"]=false')
+                    arrayadd(xattr_str, '["'..x..'"]=false')
                     break
                 end
-                table.insert(xattr_str, '["'..x..'"]='..format('%q',v))
+                arrayadd(xattr_str, '["'..x..'"]='..format('%q',v))
             end
-            table.insert(meta_str, 'xattr={'..concat(xattr_str, ',')..'}')
+            arrayadd(meta_str, 'xattr={'..concat(xattr_str, ',')..'}')
 
             -- regular values + symlink target
             for key, value in pairs(e) do
                 if type(value) == "number" then
-                    table.insert(meta_str, key..' = '..value)
+                    arrayadd(meta_str, key..' = '..value)
                 elseif type(value) == "string" then
-                    table.insert(meta_str, key..' = '..format("%q", value))
+                    arrayadd(meta_str, key..' = '..format("%q", value))
                 end
             end
 
@@ -667,7 +712,7 @@ serializemeta = function(self)
             if e.directorylist then
                 local t = {}
                 for d, _ in pairs(e.directorylist) do
-                    table.insert(t, '["'..d..'"]=true')
+                    arrayadd(t, '["'..d..'"]=true')
                 end
                 new_meta_fh:write(prefix,'.directorylist = {',concat(t, ','),'}\n')
             end
@@ -687,8 +732,30 @@ serializemeta = function(self)
     return lines
 end,
 
+writemetajournalentry = function(self, prefix, arglist)
+
+    -- persistency: make the lua function call
+    local o = {}
+    for i,w in ipairs(arglist) do
+        if type(arglist[i]) == "number" then
+            o[i] = arglist[i]
+        elseif type(arglist[i]) == "string" then
+            o[i] = format("%q", arglist[i])
+        end
+    end
+
+    -- ....and save it to the metafile
+    self.meta_fh:write(prefix, concat(o,","), ")\n")
+    if debug then
+        self.meta_fh:flush()
+    end
+
+    return 1
+end,
+
+
 metafile = "/home/tim/tmp/fs/test.lua",
-datadir  = "/home/tim/tmp/fs/luafs"
+datadir  = "/home/tim/tmp/fs/luafs-data"
 
 }
 
@@ -716,7 +783,7 @@ fuse_options = {
 }
 
 for i,w in ipairs(fuse_options) do
-    table.insert(options, w)
+    arrayadd(options, w)
 end
 
 -- check the mountpoint
@@ -785,7 +852,8 @@ if not meta_fh then
     meta_fh = io.open(luafs.metafile, "w")
 else
     --
-    -- read in the state the filesystem was at umount
+    -- read in the state the filesystem was at umount, this *must* be done
+    -- *before* the update change methods are made a little bit further
     --
     for l in meta_fh:lines() do
         assert(loadstring(l))()
@@ -796,8 +864,11 @@ meta_fh:close()
 meta_fh = io.open(luafs.metafile, "a+")
 luafs.meta_fh = meta_fh
 
+-- make the datadir
+lfs.mkdir(luafs.datadir)
+
 --
--- loop over all the functions and add a wrapper
+-- loop over all the functions and add a wrapper to write meta data
 --
 local change_methods = {
     rmdir       = true,
@@ -806,7 +877,6 @@ local change_methods = {
     mknod       = true,
     setxattr    = true,
     removexattr = true,
-    write       = true,
     truncate    = true,
     link        = true,
     unlink      = true,
@@ -815,8 +885,27 @@ local change_methods = {
     chown       = true,
     utime       = true,
     utimens     = true,
-    rename      = true
+    rename      = true,
+    _setblock   = true
 }
+for k, _ in pairs(change_methods) do
+    local fusemethod  = luafs[k]
+    local prefix      = "luafs:"..k.."("
+    local meta_fh     = luafs.meta_fh
+    luafs[k] = function(self,...) 
+
+        -- always add the time at the end, methods that change the metastate
+        -- usually need this to adjust the ctime
+        arg[#arg+1] = time()
+
+        self:writemetajournalentry(prefix, arg)
+        
+        -- really call the function
+        return fusemethod(self, unpack(arg))
+    end
+end
+
+-- add the context wrapper
 local context_needing_methods = {
     mkdir       = true,
     create      = true,
@@ -824,44 +913,12 @@ local context_needing_methods = {
     symlink     = true,
     chown       = true
 }
-for k, _ in pairs(change_methods) do
+for k, _ in pairs(context_needing_methods) do
     local fusemethod  = luafs[k]
     local fusecontext = fuse.context
-    local prefix      = "luafs:"..k.."("
-    local meta_fh     = luafs.meta_fh
     luafs[k] = function(self,...) 
         
-        -- some methods need the fuse context, add that code here. 
-        if context_needing_methods[k] then
-            arg[#arg+1], arg[#arg+2] = fusecontext()
-        end
-
-        -- always add the time at the end, methods that change the metastate
-        -- usually need this to adjust the ctime
-        arg[#arg+1] = time()
-
-        -- persistency: make the lua function call
-        local o = {}
-        for i,w in ipairs(arg) do
-            if type(arg[i]) == "number" then
-                o[i] = arg[i]
-            elseif type(arg[i]) == "string" then
-                o[i] = format("%q", arg[i])
-            elseif type(arg[i]) == 'table' then
-                -- FIXME: This is a hack for the truncate/write methods that
-                -- need an object ref that represents the filehandle. For this
-                -- fast implementation of saving all write() to the metadata,
-                -- this is sufficient. For a better implementation, write()'s
-                -- will not even be in the meta state, but a stub will be.
-                o[i] = "{}"
-            end
-        end
-
-        -- ....and save it to the metafile
-        meta_fh:write(prefix..concat(o,",")..")\n")
-        if debug then
-            meta_fh:flush()
-        end
+        arg[#arg+1], arg[#arg+2] = fusecontext()
 
         -- really call the function
         return fusemethod(self, unpack(arg))
