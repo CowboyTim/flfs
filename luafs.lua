@@ -260,24 +260,29 @@ write = function(self, path, buf, offset, obj)
 
     local entity = fs_meta[path]
     local data   = entity.contents
+    local map    = entity.blockmap
     local dirty  = {}
     local findx  = floor(offset/BLOCKSIZE)
 
     -- BLOCKSIZE matches ours + offset falls on the start: just assign
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
+		
+		-- no need to read in block, it will be written entirely anyway
         data[findx]  = buf
         dirty[findx] = true
+
     else
         local lindx = floor((offset + #buf - 1)/BLOCKSIZE)
+
+		-- used for both next if/else sections
+        local block = self:_getblock(data, findx, map[findx])
 
         -- fast and nice: same index, but substr() is needed
         if findx == lindx then
             local a = offset % BLOCKSIZE
             local b = a + #buf + 1
 
-            data[findx]  = data[findx] or empty_block
-            data[findx]  = substr(data[findx],0,a) .. buf .. substr(data[findx],b)
-
+            data[findx]  = substr(block,0,a) .. buf .. substr(block,b)
             dirty[findx] = true
         else
             -- simple checks don't match: multiple blocks need to be adjusted.
@@ -286,19 +291,21 @@ write = function(self, path, buf, offset, obj)
             -- start: will exist, as findx!=lindx
             local boffset = offset - findx*BLOCKSIZE
             local a,b = 0,BLOCKSIZE - boffset
-            data[findx]  = substr(data[findx] or empty_block, 0, boffset) .. substr(buf, a, b)
+            data[findx]  = substr(block, 0, boffset) .. substr(buf, a, b)
             dirty[findx] = true
 
             -- middle: doesn't necessarily have to exist
             for i=findx+1,lindx-1 do
+				-- no need to read in block, it will be written entirely anyway
                 a, b = b + 1, b + 1 + BLOCKSIZE
-                data[i] = substr(buf, a, b)
+                data[i] = substr(buf, a, b) 
                 dirty[i] = true
             end
 
             -- end: maybe exist, as findx!=lindx, and not ending on blockboundary
+        	block = self:_getblock(data, lindx, map[lindx])
             a, b = b + 1, b + 1 + BLOCKSIZE
-            data[lindx]  = substr(buf, a, b) .. substr(data[lindx] or empty_block, b)
+            data[lindx]  = substr(buf, a, b) .. substr(block, b)
             dirty[lindx] = true
 
         end
@@ -311,11 +318,14 @@ write = function(self, path, buf, offset, obj)
         fh = io.open(self.datadir.."/"..dirty[i], 'w')
         fh:write(data[i])
         fh:close()
+
+		-- make our little cache empty again
+		data[i] = nil
     end
 
     -- adjust the metadata in the journal
+    local size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
     for i, _ in pairs(dirty) do
-        local size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
         self:_setblock(path, i, dirty[i], size)
     end
 
@@ -370,7 +380,7 @@ truncate = function(self, path, size, ctime)
             map[i]  = nil
         end
         local str = self:_getblock(data, lindx, map[lindx])
-        str = substr(str,0,size%BLOCKSIZE) .. substr(empty_block,size%BLOCKSIZE, BLOCKSIZE)
+        str = substr(str,0,size%BLOCKSIZE) .. substr(empty_block,size%BLOCKSIZE)
 
         -- write that one block: will update meta information too.
         self:write(path, str, lindx*BLOCKSIZE, {})
