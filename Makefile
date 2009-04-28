@@ -20,9 +20,7 @@ T= $(MYLIB).so
 OBJS= $(MYLIB).o
 CC=gcc
 
-all:	test
-
-test:	$T
+all:	so
 
 o:	$(MYLIB).o
 
