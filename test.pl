@@ -29,5 +29,10 @@ if(!defined $r){
     die "Error syswrite: $!\n";
 }
 
+$r = syswrite($fh, 'B' x 10_000_000, 10_000_000);
+if(!defined $r){
+    die "Error syswrite: $!\n";
+}
+
 
 close($fh) or die "Error closing $file: $!\n";
