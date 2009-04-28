@@ -359,21 +359,28 @@ truncate = function(self, path, size, ctime)
     end
 
     local m = fs_meta[path]
+    if size > 0 then
 
-    -- update meta information
-    m.ctime = ctime
-    m.mtime = ctime
-    m.size  = size
+        -- update contents
+        local lindx = floor(size/BLOCKSIZE)
+        local data  = m.contents
+        local map   = m.blockmap
+        for i=lindx+1,#map do
+            data[i] = nil
+            map[i]  = nil
+        end
+        local str = self:_getblock(data, lindx, map[lindx])
+        str = substr(str,0,size%BLOCKSIZE) .. substr(empty_block,size%BLOCKSIZE, BLOCKSIZE)
 
-    -- update contents
-    local lindx = floor(size/BLOCKSIZE)
-    local data  = m.contents
-    local map   = m.blockmap
-    for i=lindx+1,#data do
-        data[i] = nil
-        map[i]  = nil
+        -- write that one block: will update meta information too.
+        self:write(path, str, lindx*BLOCKSIZE, {})
+    else 
+        m.contents = {}
+        m.blockmap = {}
+        m.ctime    = ctime
+        m.mtime    = ctime
+        m.size     = 0
     end
-    data[lindx] = substr(data[lindx] or empty_block,0,size%BLOCKSIZE)
 
     return 0
 end,
