@@ -734,11 +734,12 @@ serializemeta = function(self)
                 new_meta_fh:write(prefix,'.directorylist = {',concat(t, ','),'}\n')
             end
 
-            -- contents
-            if e.contents then
+            -- dump the blockmap
+            if e.blockmap then
                 new_meta_fh:write(prefix,'.contents = {}\n')
-                for i, data in pairs(e.contents) do
-                    new_meta_fh:write(prefix,'.contents[',i,'] = ',format("%q", data),"\n")
+                new_meta_fh:write(prefix,'.blockmap = {}\n')
+                for i, data in pairs(e.blockmap) do
+                    new_meta_fh:write(prefix,'.blockmap[',i,'] = ',format("%q", data),"\n")
                 end
             end
         
