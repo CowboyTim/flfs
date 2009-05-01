@@ -324,23 +324,9 @@ read = function(self, path, size, offset, obj)
     return 0, concat(str)
 end,
 
-_getblock = function(self, data, i, blocknr)
-
-    if not data[i] and blocknr ~= nil then
-        print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>'))
-        fh = io.open(self.datadir.."/"..blocknr, 'r')
-        local a = fh:read(BLOCKSIZE)
-        fh:close()
-
-        print("_getblock|return:"..#a)
-        if a and #a then
-            data[i] = a
-        end
-    end
-    return data[i] or empty_block
-end,
-
 write = function(self, path, buf, offset, obj)
+
+    -- This call is *NOT* journaled, instead it's _setblock() calls are
 
     local entity = fs_meta[path]
     local data   = entity.contents or {}
@@ -416,13 +402,21 @@ write = function(self, path, buf, offset, obj)
 end,
 
 _writeblock = function(self, path, blocknr, blockdata)
+
+    -- this is an actual write of the data to disk. This does not change the
+    -- meta journal, that is done seperately, and at the end
+
     fh = io.open(self.datadir.."/"..blocknr, 'w')
     fh:write(blockdata)
     fh:close()
 end,
 
 _setblock = function(self, path, i, bnr, size, ctime)
-    -- a call to this function will also write a meta journal entry
+
+    -- a call to this function will also write a meta journal entry, write() is
+    -- *NOT* journaled, these calls are instead, so that the writing of data is
+    -- always strict
+
     local e = fs_meta[path]
     e.blockmap[i] = bnr
     e.size        = size
@@ -430,6 +424,22 @@ _setblock = function(self, path, i, bnr, size, ctime)
     e.mtime       = ctime
     block_nr      = bnr -- kindof 'dirty' but the journal will be correct
     return 0
+end,
+
+_getblock = function(self, data, i, blocknr)
+
+    if not data[i] and blocknr ~= nil then
+        print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>'))
+        fh = io.open(self.datadir.."/"..blocknr, 'r')
+        local a = fh:read(BLOCKSIZE)
+        fh:close()
+
+        print("_getblock|return:"..#a)
+        if a and #a then
+            data[i] = a
+        end
+    end
+    return data[i] or empty_block
 end,
 
 release = function(self, path, obj)
