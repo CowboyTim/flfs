@@ -678,8 +678,6 @@ static int xmp_bmap(const char *path, size_t blocksize,
     return res;
 }
 
-/* FIXME: implement actual use of fuse_conn_info parameters within lua
- */
 static void * xmp_init(struct fuse_conn_info *conn)
 {
     int res;
@@ -698,9 +696,6 @@ static void * xmp_init(struct fuse_conn_info *conn)
     return t;
 }
 
-/* FIXME: This void * t is normally from init(), however, that's not yet
- *        implemented 
- */
 static int xmp_destroy(void * return_ptr_from_init)
 {
     int res;
