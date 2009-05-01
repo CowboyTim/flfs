@@ -106,11 +106,8 @@ end
 local function new_meta(mymode, uid, gid, now)
     inode_start = inode_start + 1
     return {
-        xattr = {[-1] = true},
         mode  = mymode,
         ino   = inode_start,
-        dev   = 0,
-        nlink = 2,
         uid   = uid,
         gid   = gid,
         size  = 0,
@@ -141,6 +138,7 @@ fs_meta     = {
     ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 }
 fs_meta["/"].directorylist = {}
+fs_meta["/"].nlink         = 2
 
 --
 -- FUSE methods (object)
@@ -270,6 +268,7 @@ mkdir = function(self, path, mode, cuid, cgid, ctime)
     print("parentdir:"..parent)
     fs_meta[path] = new_meta(mode + S_IFDIR, cuid, cgid, ctime)
     fs_meta[path].directorylist = {}
+    fs_meta[path].nlink = 2
     fs_meta[parent].nlink = fs_meta[parent].nlink + 1
     fs_meta[parent].directorylist[subdir] = fs_meta[path]
     fs_meta[parent].ctime = ctime
@@ -320,7 +319,6 @@ create = function(self, path, mode, flags, cuid, cgid, ctime)
         mode = mk_mode(6,4,4)
     end
     fs_meta[path] = new_meta(set_bits(mode, S_IFREG), cuid, cgid, ctime)
-    fs_meta[path].nlink = 1
     fs_meta[path].blockmap = {}
     fs_meta[parent].directorylist[file] = fs_meta[path]
     fs_meta[parent].ctime = ctime
@@ -575,7 +573,6 @@ symlink = function(self, from, to, cuid, cgid, ctime)
     -- when someone makes a symlink on this filesystem...
     local parent,file = to:splitpath()
     fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, cuid, cgid, ctime)
-    fs_meta[to].nlink  = 1
     fs_meta[to].target = from
     fs_meta[parent].directorylist[file] = fs_meta[to]
     fs_meta[parent].ctime = ctime
@@ -597,7 +594,7 @@ link = function(self, from, to, ctime)
     if entity then
         -- update meta
         entity.ctime = ctime
-        entity.nlink = entity.nlink + 1
+        entity.nlink = (entity.nlink or 1) + 1
 
         -- 'copy'
         fs_meta[to]  = fs_meta[from]
@@ -617,7 +614,7 @@ end,
 unlink = function(self, path, ctime)
 
     local entity = fs_meta[path]
-    entity.nlink = entity.nlink - 1
+    entity.nlink = (entity.nlink or 1) - 1
     entity.ctime = ctime
 
     local p,e = path:splitpath()
@@ -641,7 +638,6 @@ mknod = function(self, path, mode, rdev, cuid, cgid, ctime)
     --
     -- FIXME: support 'plain' mknod too: S_IFBLK and S_IFCHR
     fs_meta[path]         = new_meta(mode, cuid, cgid, ctime)
-    fs_meta[path].nlink   = 1
     fs_meta[path].dev     = rdev
 
     local parent,file = path:splitpath()
@@ -736,9 +732,7 @@ fsyncdir = function(self, path, isdatasync, obj)
 end,
 
 fgetattr = function(self, path, obj)
-    local x = obj.f
-    print("fgetattr():"..x.mode..",".. x.ino..",".. x.dev..",".. x.nlink..",".. x.uid..",".. x.gid..",".. x.size..",".. x.atime..",".. x.mtime..",".. x.ctime)
-    return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
+    return self:getattr(path)
 end,
 
 destroy = function(self, return_value_from_init)
@@ -765,14 +759,18 @@ getattr = function(self, path)
     if not x then
         return ENOENT, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
     end 
-    print("getattr():"..x.mode..",".. x.ino..",".. x.dev..",".. x.nlink..",".. x.uid..",".. x.gid..",".. x.size..",".. x.atime..",".. x.mtime..",".. x.ctime)
-    return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
+    if debug then
+        print("getattr():"..x.mode..",".. x.ino..",".. (x.dev or '<dev=nil but returning 0>')
+              ..",".. (x.nlink or '<nlink=nil but returning 1>')..",".. x.uid..",".. x.gid..",".. x.size..","
+              .. x.atime..",".. x.mtime..",".. x.ctime)
+    end
+    return 0, x.mode, x.ino, x.dev or 0, x.nlink or 1, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
 end,
 
 listxattr = function(self, path, size)
     if fs_meta[path] then
         local s = "\0"
-        for k,v in pairs(fs_meta[path].xattr) do 
+        for k,v in pairs(fs_meta[path].xattr or {}) do 
             if type(v) == "string" then
                 s = v .. "\0" .. s
             end
@@ -784,7 +782,7 @@ listxattr = function(self, path, size)
 end,
 
 removexattr = function(self, path, name)
-    if fs_meta[path] then
+    if fs_meta[path] and fs_meta[path].xattr then
         fs_meta[path].xattr[name] = nil
         return 0
     else
@@ -793,8 +791,10 @@ removexattr = function(self, path, name)
 end,
 
 setxattr = function(self, path, name, val, flags)
-    if fs_meta[path] then
-        fs_meta[path].xattr[name] = val
+    local e = fs_meta[path]
+    if e then
+        e.xattr = e.xattr or {}
+        e.xattr[name] = val
         return 0
     else
         return ENOENT
@@ -802,8 +802,11 @@ setxattr = function(self, path, name, val, flags)
 end,
 
 getxattr = function(self, path, name, size)
+    local e = fs_meta[path]
     if fs_meta[path] then
-        return fs_meta[path].xattr[name] or "" --not found is empty string
+        -- xattr 'name' not found is empty string ""
+        e.xattr = e.xattr or {}
+        return e.xattr[name] or ""
     else
         return ENOENT, ""
     end
@@ -816,10 +819,10 @@ end,
 
 serializemeta = function(self)
 
-    -- FIXME: find an less memory consuming method
-    --
     -- a hash that transfers inode numbers to the first dumped path, this
-    -- serves the purpose of making the hardlinks correct
+    -- serves the purpose of making the hardlinks correct. Of course, we only
+    -- keep them here when the number of links > 1. (Or in case a directory is
+    -- linked, >2)
     local inode = {}
 
     -- write the main globals first
@@ -837,25 +840,12 @@ serializemeta = function(self)
         else
 
             -- save that ref for our hardlink tree check
-            inode[e.ino] = k
-
-            -- metadata:xattr
-            local xattr_str = {}
-            for x,v in pairs(e.xattr) do
-                if type(v) == 'boolean' and v == true then
-                    arrayadd(xattr_str, '["'..x..'"]=true')
-                    break
-                end
-                if type(v) == 'boolean' and v == false then
-                    arrayadd(xattr_str, '["'..x..'"]=false')
-                    break
-                end
-                arrayadd(xattr_str, '["'..x..'"]='..format('%q',v))
+            if (e.directorylist and e.nlink > 2) or (e.nlink and e.nlink > 1) then
+                inode[e.ino] = k
             end
-            local meta_str = {}
-            arrayadd(meta_str, 'xattr={'..concat(xattr_str, ',')..'}')
 
             -- regular values + symlink target
+            local meta_str = {}
             for key, value in pairs(e) do
                 if type(value) == "number" then
                     arrayadd(meta_str, key..'='..value)
@@ -864,6 +854,23 @@ serializemeta = function(self)
                 end
             end
             new_meta_fh:write(prefix,'={', concat(meta_str, ","))
+
+            -- metadata:xattr
+            if e.xattr then
+                local xattr_str = {}
+                for x,v in pairs(e.xattr) do
+                    if type(v) == 'boolean' and v == true then
+                        arrayadd(xattr_str, '["'..x..'"]=true')
+                        break
+                    end
+                    if type(v) == 'boolean' and v == false then
+                        arrayadd(xattr_str, '["'..x..'"]=false')
+                        break
+                    end
+                    arrayadd(xattr_str, '["'..x..'"]='..format('%q',v))
+                end
+                arrayadd(meta_str, 'xattr={'..concat(xattr_str, ',')..'}')
+            end
 
             -- 'real' data entry stuff
             local t = {}
