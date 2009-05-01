@@ -142,8 +142,6 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --
     -- open that state for further updates, create if it doesn't exist
     --
-    -- FIXME: make a nice close upon destroy (umount and signals)
-    -- 
     local meta_fh = io.open(self.metafile, "r")
     if not meta_fh then
         meta_fh = io.open(self.metafile, "w")
