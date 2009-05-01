@@ -138,9 +138,94 @@ fs_meta["/"].directorylist = {}
 
 luafs   = {
 
---init = function(self, connection_info)
---    return {}
---end,
+init = function(self, proto_major, proto_minor, async_read, max_write, max_readahead)
+    --
+    -- open that state for further updates, create if it doesn't exist
+    --
+    -- FIXME: make a nice close upon destroy (umount and signals)
+    -- 
+    local meta_fh = io.open(self.metafile, "r")
+    if not meta_fh then
+        meta_fh = io.open(self.metafile, "w")
+    else
+        --
+        -- read in the state the filesystem was at umount, this *must* be done
+        -- *before* the update change methods are made a little bit further
+        --
+        for l in meta_fh:lines() do
+            assert(loadstring(l))()
+        end
+        say("done reading metadata from "..self.metafile) 
+    end
+    meta_fh:close()
+    meta_fh = io.open(self.metafile, "a+")
+
+    -- save for further journaling
+    self.meta_fh = meta_fh
+
+    -- make the datadir
+    lfs.mkdir(self.datadir)
+
+    --
+    -- loop over all the functions and add a wrapper to write meta data
+    --
+    local change_methods = {
+        rmdir       = true,
+        mkdir       = true,
+        create      = true,
+        mknod       = true,
+        setxattr    = true,
+        removexattr = true,
+        truncate    = true,
+        link        = true,
+        unlink      = true,
+        symlink     = true,
+        chmod       = true,
+        chown       = true,
+        utime       = true,
+        utimens     = true,
+        rename      = true,
+        _setblock   = true
+    }
+    for k, _ in pairs(change_methods) do
+        local fusemethod  = self[k]
+        local prefix      = "self:"..k.."("
+        local meta_fh     = self.meta_fh
+        self[k] = function(self,...) 
+
+            -- always add the time at the end, methods that change the metastate
+            -- usually need this to adjust the ctime
+            arg[#arg+1] = time()
+
+            self:writemetajournalentry(prefix, arg)
+            
+            -- really call the function
+            return fusemethod(self, unpack(arg))
+        end
+    end
+
+    -- add the context wrapper
+    local context_needing_methods = {
+        mkdir       = true,
+        create      = true,
+        mknod       = true,
+        symlink     = true,
+        chown       = true
+    }
+    for k, _ in pairs(context_needing_methods) do
+        local fusemethod  = self[k]
+        local fusecontext = fuse.context
+        self[k] = function(self,...) 
+            
+            arg[#arg+1], arg[#arg+2] = fusecontext()
+
+            -- really call the function
+            return fusemethod(self, unpack(arg))
+        end
+    end
+
+    return 0
+end,
 
 rmdir = function(self, path, ctime)
     if next(fs_meta[path].directorylist) then
@@ -618,7 +703,7 @@ fgetattr = function(self, path, obj)
     return 0, x.mode, x.ino, x.dev, x.nlink, x.uid, x.gid, x.size, x.atime, x.mtime, x.ctime    
 end,
 
-destroy = function(self)
+destroy = function(self, return_value_from_init)
     self.meta_fh:close()
     self:serializemeta()
     return 0
@@ -866,90 +951,6 @@ end
 for i,w in ipairs(options) do
     print("option:"..w)
 end
-
---
--- open that state for further updates, create if it doesn't exist
---
--- FIXME: make a nice close upon destroy (umount and signals)
--- 
-local meta_fh = io.open(luafs.metafile, "r")
-if not meta_fh then
-    meta_fh = io.open(luafs.metafile, "w")
-else
-    --
-    -- read in the state the filesystem was at umount, this *must* be done
-    -- *before* the update change methods are made a little bit further
-    --
-    for l in meta_fh:lines() do
-        assert(loadstring(l))()
-    end
-    say("done reading metadata from "..luafs.metafile) 
-end
-meta_fh:close()
-meta_fh = io.open(luafs.metafile, "a+")
-luafs.meta_fh = meta_fh
-
--- make the datadir
-lfs.mkdir(luafs.datadir)
-
---
--- loop over all the functions and add a wrapper to write meta data
---
-local change_methods = {
-    rmdir       = true,
-    mkdir       = true,
-    create      = true,
-    mknod       = true,
-    setxattr    = true,
-    removexattr = true,
-    truncate    = true,
-    link        = true,
-    unlink      = true,
-    symlink     = true,
-    chmod       = true,
-    chown       = true,
-    utime       = true,
-    utimens     = true,
-    rename      = true,
-    _setblock   = true
-}
-for k, _ in pairs(change_methods) do
-    local fusemethod  = luafs[k]
-    local prefix      = "luafs:"..k.."("
-    local meta_fh     = luafs.meta_fh
-    luafs[k] = function(self,...) 
-
-        -- always add the time at the end, methods that change the metastate
-        -- usually need this to adjust the ctime
-        arg[#arg+1] = time()
-
-        self:writemetajournalentry(prefix, arg)
-        
-        -- really call the function
-        return fusemethod(self, unpack(arg))
-    end
-end
-
--- add the context wrapper
-local context_needing_methods = {
-    mkdir       = true,
-    create      = true,
-    mknod       = true,
-    symlink     = true,
-    chown       = true
-}
-for k, _ in pairs(context_needing_methods) do
-    local fusemethod  = luafs[k]
-    local fusecontext = fuse.context
-    luafs[k] = function(self,...) 
-        
-        arg[#arg+1], arg[#arg+2] = fusecontext()
-
-        -- really call the function
-        return fusemethod(self, unpack(arg))
-    end
-end
-
 
 --
 -- start the main fuse loop

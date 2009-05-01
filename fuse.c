@@ -678,15 +678,36 @@ static int xmp_bmap(const char *path, size_t blocksize,
     return res;
 }
 
+/* FIXME: implement actual use of fuse_conn_info parameters within lua
+ */
+static void * xmp_init(struct fuse_conn_info *conn)
+{
+    int res;
+
+    LOAD_FUNC("init")
+    lua_pushnumber(L_VM, conn->proto_major);
+    lua_pushnumber(L_VM, conn->proto_minor);
+    lua_pushnumber(L_VM, conn->async_read);
+    lua_pushnumber(L_VM, conn->max_write);
+    lua_pushnumber(L_VM, conn->max_readahead);
+    obj_pcall(5, 1, 0);
+    err_pcall(res);
+    void *t  = luaL_ref(L_VM, LUA_REGISTRYINDEX);
+    EPILOGUE(1);
+
+    return t;
+}
+
 /* FIXME: This void * t is normally from init(), however, that's not yet
  *        implemented 
  */
-static int xmp_destroy(void * t)
+static int xmp_destroy(void * return_ptr_from_init)
 {
     int res;
 
     LOAD_FUNC("destroy")
-    obj_pcall(0, 1, 0);
+    lua_rawgeti(L_VM, LUA_REGISTRYINDEX, return_ptr_from_init); 
+    obj_pcall(1, 1, 0);
     err_pcall(res);
     res = lua_tointeger(L_VM, -1);
     EPILOGUE(1);
@@ -809,6 +830,7 @@ static struct fuse_operations xmp_oper = {
     #endif
     .utimens             = xmp_utimens,
     .destroy             = xmp_destroy,
+    .init                = xmp_init,
     .bmap                = xmp_bmap
 };
 
