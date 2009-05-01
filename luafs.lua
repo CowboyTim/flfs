@@ -103,8 +103,8 @@ local function mk_mode(owner, group, world, sticky)
     return owner * S_UID + group * S_GID + world + sticky * S_SID
 end
 
-local inode_start = 1
-local block_nr  = 0
+inode_start = 1
+block_nr    = 0
 
 local function getnextblocknr (self)
     block_nr = block_nr + 1
@@ -695,6 +695,7 @@ serializemeta = function(self)
     local inode = {}
     local lines = {}
     local new_meta_fh = io.open(self.metafile..'.new', 'w')
+    new_meta_fh:write('block_nr,inode_start='..block_nr..','..inode_start.."\n")
     for k,e in pairs(fs_meta) do
         local prefix = 'fs_meta["'..k..'"]'
         if inode[e.ino] then
