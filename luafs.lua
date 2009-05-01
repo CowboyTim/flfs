@@ -153,7 +153,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
         -- *before* the update change methods are made a little bit further
         --
         for l in meta_fh:lines() do
-            assert(loadstring(l))()
+            loadstring(l)()
         end
         say("done reading metadata from "..self.metafile) 
     end
@@ -189,7 +189,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     }
     for k, _ in pairs(change_methods) do
         local fusemethod  = self[k]
-        local prefix      = "self:"..k.."("
+        local prefix      = "luafs."..k.."(self,"
         local meta_fh     = self.meta_fh
         self[k] = function(self,...) 
 
