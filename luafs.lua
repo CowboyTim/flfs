@@ -215,7 +215,6 @@ create = function(self, path, mode, flags, cuid, cgid, ctime)
     end
     fs_meta[path] = new_meta(set_bits(mode, S_IFREG), cuid, cgid, ctime)
     fs_meta[path].nlink = 1
-    fs_meta[path].contents = {}
     fs_meta[path].blockmap = {}
     fs_meta[parent].directorylist[file] = fs_meta[path]
     fs_meta[parent].ctime = ctime
@@ -224,8 +223,10 @@ create = function(self, path, mode, flags, cuid, cgid, ctime)
 end,
 
 read = function(self, path, size, offset, obj)
-    local data  = obj.f.contents
-    local map   = obj.f.blockmap
+    local entity = fs_meta[path]
+    local data   = entity.contents or {}
+    entity.contents = data
+    local map   = entity.blockmap
     local findx = floor(offset/BLOCKSIZE)
     local lindx = floor((offset + size)/BLOCKSIZE)
     if findx == lindx then
@@ -259,7 +260,8 @@ end,
 write = function(self, path, buf, offset, obj)
 
     local entity = fs_meta[path]
-    local data   = entity.contents
+    local data   = entity.contents or {}
+    entity.contents = data
     local map    = entity.blockmap
     local dirty  = {}
     local findx  = floor(offset/BLOCKSIZE)
@@ -315,9 +317,7 @@ write = function(self, path, buf, offset, obj)
     for i, _ in pairs(dirty) do
         dirty[i] = getnextblocknr()
 
-        fh = io.open(self.datadir.."/"..dirty[i], 'w')
-        fh:write(data[i])
-        fh:close()
+        self:_writeblock(path, dirty[i], data[i])
 
 		-- make our little cache empty again
 		data[i] = nil
@@ -332,7 +332,14 @@ write = function(self, path, buf, offset, obj)
     return #buf
 end,
 
+_writeblock = function(self, path, blocknr, blockdata)
+    fh = io.open(self.datadir.."/"..blocknr, 'w')
+    fh:write(blockdata)
+    fh:close()
+end,
+
 _setblock = function(self, path, i, bnr, size, ctime)
+    -- a call to this function will also write a meta journal entry
     local e = fs_meta[path]
     e.blockmap[i] = bnr
     e.size        = size
@@ -369,23 +376,22 @@ truncate = function(self, path, size, ctime)
     end
 
     local m = fs_meta[path]
+    m.contents = nil
+
     if size > 0 then
 
-        -- update contents
+        -- update blockmap
         local lindx = floor(size/BLOCKSIZE)
-        local data  = m.contents
         local map   = m.blockmap
         for i=lindx+1,#map do
-            data[i] = nil
             map[i]  = nil
         end
-        local str = self:_getblock(data, lindx, map[lindx])
+        local str = self:_getblock({}, lindx, map[lindx])
         str = substr(str,0,size%BLOCKSIZE) .. substr(empty_block,size%BLOCKSIZE)
 
         -- write that one block: will update meta information too.
         self:write(path, str, lindx*BLOCKSIZE, {})
     else 
-        m.contents = {}
         m.blockmap = {}
         m.ctime    = ctime
         m.mtime    = ctime
@@ -736,11 +742,11 @@ serializemeta = function(self)
 
             -- dump the blockmap
             if e.blockmap then
-                new_meta_fh:write(prefix,'.contents = {}\n')
-                new_meta_fh:write(prefix,'.blockmap = {}\n')
-                for i, data in pairs(e.blockmap) do
-                    new_meta_fh:write(prefix,'.blockmap[',i,'] = ',format("%q", data),"\n")
+                local b = {}
+                for i, v in pairs(e.blockmap) do
+                    arrayadd(b, '['..i..']='..v)
                 end
+                new_meta_fh:write(prefix,'.blockmap = {'..concat(b, ',')..'}\n')
             end
         
             
