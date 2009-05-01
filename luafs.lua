@@ -151,6 +151,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
         -- *before* the update change methods are made a little bit further
         --
         for l in meta_fh:lines() do
+            print("EXEC:"..l)
             loadstring(l)()
         end
         say("done reading metadata from "..self.metafile) 
@@ -195,8 +196,22 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             -- usually need this to adjust the ctime
             arg[#arg+1] = time()
 
-            self:writemetajournalentry(prefix, arg)
-            
+            -- persistency: make the lua function call
+            local o = {}
+            for i,w in ipairs(arg) do
+                if type(arg[i]) == "number" then
+                    o[i] = arg[i]
+                elseif type(arg[i]) == "string" then
+                    o[i] = format("%q", arg[i])
+                end
+            end
+
+            -- ....and save it to the metafile
+            meta_fh:write(prefix, concat(o,","), ")\n")
+            if debug then
+                meta_fh:flush()
+            end
+
             -- really call the function
             return fusemethod(self, unpack(arg))
         end
@@ -785,21 +800,32 @@ statfs = function(self, path)
 end,
 
 serializemeta = function(self)
+
+    -- FIXME: find an less memory consuming method
+    --
+    -- a hash that transfers inode numbers to the first dumped path, this
+    -- serves the purpose of making the hardlinks correct
     local inode = {}
-    local lines = {}
+
+    -- write the main globals first
     local new_meta_fh = io.open(self.metafile..'.new', 'w')
     new_meta_fh:write('block_nr,inode_start='..block_nr..','..inode_start.."\n")
+
+    -- loop over all filesystem entries
     for k,e in pairs(fs_meta) do
         local prefix = 'fs_meta["'..k..'"]'
         if inode[e.ino] then
+
             -- just add a link
             new_meta_fh:write(prefix,' = fs_meta["',inode[e.ino],'"]\n')
+
         else
+
+            -- save that ref for our hardlink tree check
             inode[e.ino] = k
 
             -- metadata:xattr
             local xattr_str = {}
-            local meta_str  = {}
             for x,v in pairs(e.xattr) do
                 if type(v) == 'boolean' and v == true then
                     arrayadd(xattr_str, '["'..x..'"]=true')
@@ -811,64 +837,46 @@ serializemeta = function(self)
                 end
                 arrayadd(xattr_str, '["'..x..'"]='..format('%q',v))
             end
+            local meta_str = {}
             arrayadd(meta_str, 'xattr={'..concat(xattr_str, ',')..'}')
 
             -- regular values + symlink target
             for key, value in pairs(e) do
                 if type(value) == "number" then
-                    arrayadd(meta_str, key..' = '..value)
+                    arrayadd(meta_str, key..'='..value)
                 elseif type(value) == "string" then
-                    arrayadd(meta_str, key..' = '..format("%q", value))
+                    arrayadd(meta_str, key..'='..format("%q", value))
                 end
             end
+            new_meta_fh:write(prefix,'={', concat(meta_str, ","))
 
-            new_meta_fh:write(prefix,' = {', concat(meta_str, ","),'}\n')
-
-
-            -- directorylist
+            -- 'real' data entry stuff
+            local t = {}
             if e.directorylist then
-                local t = {}
+
+                -- directorylist
                 for d, _ in pairs(e.directorylist) do
                     arrayadd(t, '["'..d..'"]=true')
                 end
-                new_meta_fh:write(prefix,'.directorylist = {',concat(t, ','),'}\n')
-            end
+                new_meta_fh:write(',directorylist={',concat(t, ','),'}}\n')
 
-            -- dump the blockmap
-            if e.blockmap then
-                local b = {}
+            elseif e.blockmap then
+
+                -- dump the blockmap
                 for i, v in pairs(e.blockmap) do
-                    arrayadd(b, '['..i..']='..v)
+                    arrayadd(t, '['..i..']='..v)
                 end
-                new_meta_fh:write(prefix,'.blockmap = {'..concat(b, ',')..'}\n')
+                new_meta_fh:write(',blockmap={',concat(t, ','),'}}\n')
+            else
+
+                -- was a symlink, node,.. just close the tag
+                new_meta_fh:write('}\n')
             end
-        
-            
         end
     end
     new_meta_fh:close()
-    return lines
-end,
 
-writemetajournalentry = function(self, prefix, arglist)
-
-    -- persistency: make the lua function call
-    local o = {}
-    for i,w in ipairs(arglist) do
-        if type(arglist[i]) == "number" then
-            o[i] = arglist[i]
-        elseif type(arglist[i]) == "string" then
-            o[i] = format("%q", arglist[i])
-        end
-    end
-
-    -- ....and save it to the metafile
-    self.meta_fh:write(prefix, concat(o,","), ")\n")
-    if debug then
-        self.meta_fh:flush()
-    end
-
-    return 1
+    return 0
 end,
 
 
