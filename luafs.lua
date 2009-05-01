@@ -13,7 +13,7 @@ local S_IFBLK   = 6*2^12
 local S_IFREG   = 2^15
 local S_IFLNK   = S_IFREG + S_IFCHR
 
--- For access(), taken from unistd.h
+-- for access(), taken from unistd.h
 local R_OK      = 1 -- Test for read permissions
 local W_OK      = 2 -- Test for write permissions
 local X_OK      = 3 -- Test for execute permissions
@@ -32,6 +32,9 @@ local ENOTSUPP     = -524
 local BLOCKSIZE    = 4096
 local MAXINT       = 2^32 -1
 
+--
+-- shortcuts, lua speedups in fact
+--
 local substr    = string.sub
 local floor     = math.floor
 local time      = os.time
@@ -39,12 +42,9 @@ local concat    = table.concat
 local arrayadd  = table.insert
 local format    = string.format
 
-local t = {}
-for i=1,BLOCKSIZE do
-    arrayadd(t, "\000")
-end
-local empty_block = concat(t)
-
+--
+-- Helper functions
+--
 local tab = {  -- tab[i+1][j+1] = xor(i, j) where i,j in (0-15)
   {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, },
   {1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14, },
@@ -103,16 +103,6 @@ local function mk_mode(owner, group, world, sticky)
     return owner * S_UID + group * S_GID + world + sticky * S_SID
 end
 
-inode_start = 1
-block_nr    = 0
-
-local function getnextblocknr (self)
-    block_nr = block_nr + 1
-    return block_nr
-end
-
-
-
 local function new_meta(mymode, uid, gid, now)
     inode_start = inode_start + 1
     return {
@@ -130,14 +120,32 @@ local function new_meta(mymode, uid, gid, now)
     }
 end
 
+-- needed to get the correct / permissions (from FUSE mount user)
 local uid,gid,pid,puid,pgid = fuse.context()
-fs_meta = {
+
+-- empty block precalculated: block of \x00 for size BLOCKSIZE
+local t = {}
+for i=1,BLOCKSIZE do
+    arrayadd(t, "\000")
+end
+local empty_block = concat(t)
+
+
+--
+-- fs_meta, inode_start and block_nr are the global variables that are needed
+-- globally to go over the journal easy
+--
+inode_start = 1
+block_nr    = 0
+fs_meta     = {
     ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 }
 fs_meta["/"].directorylist = {}
 
-luafs   = {
-
+--
+-- FUSE methods (object)
+--
+luafs = {
 init = function(self, proto_major, proto_minor, async_read, max_write, max_readahead)
     --
     -- open that state for further updates, create if it doesn't exist
@@ -399,7 +407,7 @@ write = function(self, path, buf, offset, obj)
 
     -- rewrite all blocks to disk
     for i, _ in pairs(dirty) do
-        dirty[i] = getnextblocknr()
+        dirty[i] = self:_getnextfreeblocknr()
 
         self:_writeblock(path, dirty[i], data[i])
 
@@ -414,6 +422,13 @@ write = function(self, path, buf, offset, obj)
     end
 
     return #buf
+end,
+
+_getnextfreeblocknr = function (self)
+    -- maybe use a closure someday? be carefull to let the metajournal still
+    -- work correctly! :-)
+    block_nr = block_nr + 1
+    return block_nr
 end,
 
 _writeblock = function(self, path, blocknr, blockdata)
@@ -878,7 +893,6 @@ serializemeta = function(self)
 
     return 0
 end,
-
 
 metafile = "/home/tim/tmp/fs/test.lua",
 datadir  = "/home/tim/tmp/fs/luafs-data"
