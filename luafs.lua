@@ -328,8 +328,7 @@ end,
 
 read = function(self, path, size, offset, obj)
     local entity = fs_meta[path]
-    local data   = entity.contents or {}
-    entity.contents = data
+    local data   = {}
     local map   = entity.blockmap
     local findx = floor(offset/BLOCKSIZE)
     local lindx = floor((offset + size)/BLOCKSIZE)
@@ -350,8 +349,7 @@ write = function(self, path, buf, offset, obj)
     -- This call is *NOT* journaled, instead it's _setblock() calls are
 
     local entity = fs_meta[path]
-    local data   = entity.contents or {}
-    entity.contents = data
+    local data   = {}
     local map    = entity.blockmap
     local dirty  = {}
     local findx  = floor(offset/BLOCKSIZE)
@@ -519,7 +517,6 @@ truncate = function(self, path, size, ctime)
     end
 
     local m = fs_meta[path]
-    m.contents = nil
 
     if size > 0 then
 
