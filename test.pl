@@ -34,5 +34,10 @@ if(!defined $r){
     die "Error syswrite: $!\n";
 }
 
+$r = truncate($fh, 10);
+if(!defined $r){
+    die "Error truncate: $!\n";
+}
+
 
 close($fh) or die "Error closing $file: $!\n";
