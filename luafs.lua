@@ -133,7 +133,7 @@ local empty_block = concat(t)
 -- globally to go over the journal easy
 --
 inode_start = 1
-block_nr    = 0
+block_nr    = -1
 fs_meta     = {
     ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 }
@@ -429,12 +429,32 @@ _getnextfreeblocknr = function (self)
     return block_nr
 end,
 
+_getblockstring = function(self, i)
+    local f = { self.datadir }
+    for d in string.gmatch(format('%015d', i), '(%d%d%d)') do
+        table.insert(f, d)
+    end
+    return f
+end,
+
 _writeblock = function(self, path, blocknr, blockdata)
 
     -- this is an actual write of the data to disk. This does not change the
     -- meta journal, that is done seperately, and at the end
+    --
+    local f = self:_getblockstring(blocknr)
 
-    fh = io.open(self.datadir.."/"..blocknr, 'w')
+    if blocknr % 1000 == 0 then
+        local dir = f[1]
+        for i=2,5 do
+            dir = dir .. "/".. f[i]
+            lfs.mkdir(dir)
+        end
+    end
+
+    local file = concat(f, '/')
+    print("_writeblock():"..file)
+    fh = io.open(file, 'w')
     fh:write(blockdata)
     fh:close()
 end,
@@ -457,8 +477,10 @@ end,
 _getblock = function(self, data, i, blocknr)
 
     if not data[i] and blocknr ~= nil then
-        print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>'))
-        fh = io.open(self.datadir.."/"..blocknr, 'r')
+        local file = concat(self:_getblockstring(blocknr), '/')
+
+        print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>')..",file:"..file)
+        fh = io.open(file, 'r')
         local a = fh:read(BLOCKSIZE)
         fh:close()
 
@@ -505,13 +527,34 @@ truncate = function(self, path, size, ctime)
         local lindx = floor(size/BLOCKSIZE)
         local map   = m.blockmap
         for i=lindx+1,#map do
-            map[i]  = nil
+            map[i] = nil
         end
-        local str = self:_getblock({}, lindx, map[lindx])
-        str = substr(str,0,size%BLOCKSIZE) .. substr(empty_block,size%BLOCKSIZE)
 
-        -- write that one block: will update meta information too.
-        self:write(path, str, lindx*BLOCKSIZE, {})
+        -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
+        -- this init mount()), the block was written allready
+        if self then
+            local str = self:_getblock({}, lindx, map[lindx])
+
+            -- always write as a new block
+            local bnr = self:_getnextfreeblocknr()
+
+            self:_writeblock(path, bnr, substr(str,0,size%BLOCKSIZE))
+
+            -- this puts an entry in the journal for the block set, with
+            -- correct size and all.
+            --
+            -- Thus, truncate has 2 calls in the journal:
+            --   1. truncate()
+            --   2. _setblock()
+            --
+            -- During mount, the journal needs those 2 together, which is in
+            -- fact not safe!
+            --
+            -- This is because I don't want to have no truncate(): then I would
+            -- need _setblock() for all null-ed blocks.
+            --
+            self:_setblock(path, lindx, bnr, size)
+        end
     else 
         m.blockmap = {}
         m.ctime    = ctime
