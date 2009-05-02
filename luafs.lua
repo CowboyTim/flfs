@@ -423,7 +423,7 @@ write = function(self, path, buf, offset, obj)
 		-- make our little cache empty again
 		data[i] = nil
     end
-
+    
     -- adjust the metadata in the journal
     local size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
     for i, _ in pairs(dirty) do
@@ -434,7 +434,7 @@ write = function(self, path, buf, offset, obj)
 end,
 
 _getnextfreeblocknr = function (self)
-    local bnr = freelist[#freelist]
+    local bnr = pop(freelist)
     if not bnr then
         block_nr = block_nr + 1
         return block_nr
@@ -487,13 +487,20 @@ _setblock = function(self, path, i, bnr, size, ctime)
     -- always strict
 
     local e = fs_meta[path]
-    
-    -- add the previous block to the freelist, but pop the freelist, as
-    -- _setblock() was called, that reservates the last element from that list
-    if #freelist then 
+
+    -- FIXME: hack ahead: if it does exist. Also pop the freelist when we're
+    -- traversing the journal set block_nr ok for journal traversal
+    if not self then
         pop(freelist)
+        if bnr > block_nr then
+            block_nr = bnr
+        end
     end
-    luafs._freeblock(self, {i = e.blockmap[i]})
+
+    -- free the prevous block
+    if e.blockmap[i] then
+        luafs._freeblock(self, {i = e.blockmap[i]})
+    end
     
     -- reset that block with the new one
     e.blockmap[i] = bnr
@@ -502,10 +509,6 @@ _setblock = function(self, path, i, bnr, size, ctime)
     e.size        = size
     e.ctime       = ctime
     e.mtime       = ctime
- 
-    -- kindof 'dirty' but the journal will be correct after going over the
-    -- journal at mount() time
-    block_nr      = bnr
 
     return 0
 end,
