@@ -171,7 +171,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
         --
         for l in meta_fh:lines() do
             print("EXEC:"..l)
-            loadstring(l)()
+            assert(loadstring(l))()
         end
         say("done reading metadata from "..self.metafile) 
     end
