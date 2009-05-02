@@ -38,8 +38,9 @@ local MAXINT       = 2^32 -1
 local substr    = string.sub
 local floor     = math.floor
 local time      = os.time
-local concat    = table.concat
-local arrayadd  = table.insert
+local join      = table.concat
+local push      = table.insert
+local pop       = table.remove
 local format    = string.format
 
 --
@@ -123,9 +124,9 @@ local uid,gid,pid,puid,pgid = fuse.context()
 -- empty block precalculated: block of \x00 for size BLOCKSIZE
 local t = {}
 for i=1,BLOCKSIZE do
-    arrayadd(t, "\000")
+    push(t, "\000")
 end
-local empty_block = concat(t)
+local empty_block = join(t)
 
 
 --
@@ -134,6 +135,7 @@ local empty_block = concat(t)
 --
 inode_start = 1
 block_nr    = -1
+freelist    = {}
 fs_meta     = {
     ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 }
@@ -155,6 +157,17 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
         --
         -- read in the state the filesystem was at umount, this *must* be done
         -- *before* the update change methods are made a little bit further
+        --
+        -- FIXME: 'self' cannot be used here, find out how, see also
+        --        serializemeta() for more information. Now a record in the
+        --        journal is of the form:
+        --
+        --          luafs.<method>(self, ...)
+        --
+        --        because luafs is a global that can be accessed (while 'self'
+        --        cannot as it is local?!):
+        --
+        --          loadstring(<journalentry>)()
         --
         for l in meta_fh:lines() do
             print("EXEC:"..l)
@@ -213,7 +226,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             end
 
             -- ....and save it to the metafile
-            meta_fh:write(prefix, concat(o,","), ")\n")
+            meta_fh:write(prefix, join(o,","), ")\n")
             if debug then
                 meta_fh:flush()
             end
@@ -338,10 +351,10 @@ read = function(self, path, size, offset, obj)
     end
     local str = {}
     for i=findx,lindx-1 do
-        arrayadd(str, self:_getblock(data, i, map[i]))
+        push(str, self:_getblock(data, i, map[i]))
     end
-    arrayadd(str, substr(self:_getblock(data, lindx, map[lindx]),0,offset%BLOCKSIZE+size))
-    return 0, concat(str)
+    push(str, substr(self:_getblock(data, lindx, map[lindx]),0,offset%BLOCKSIZE+size))
+    return 0, join(str)
 end,
 
 write = function(self, path, buf, offset, obj)
@@ -421,16 +434,26 @@ write = function(self, path, buf, offset, obj)
 end,
 
 _getnextfreeblocknr = function (self)
-    -- maybe use a closure someday? be carefull to let the metajournal still
-    -- work correctly! :-)
-    block_nr = block_nr + 1
-    return block_nr
+    local bnr = freelist[#freelist]
+    if not bnr then
+        block_nr = block_nr + 1
+        return block_nr
+    end
+    return bnr
+end,
+
+_freeblock = function (self, blocklist)
+    for i,a in pairs(blocklist) do
+        print("_freeblock():"..a)
+        push(freelist, a)
+    end
+    return
 end,
 
 _getblockstring = function(self, i)
     local f = { self.datadir }
     for d in string.gmatch(format('%015d', i), '(%d%d%d)') do
-        table.insert(f, d)
+        push(f, d)
     end
     return f
 end,
@@ -450,7 +473,7 @@ _writeblock = function(self, path, blocknr, blockdata)
         end
     end
 
-    local file = concat(f, '/')
+    local file = join(f, '/')
     print("_writeblock():"..file)
     fh = io.open(file, 'w')
     fh:write(blockdata)
@@ -464,18 +487,33 @@ _setblock = function(self, path, i, bnr, size, ctime)
     -- always strict
 
     local e = fs_meta[path]
+    
+    -- add the previous block to the freelist, but pop the freelist, as
+    -- _setblock() was called, that reservates the last element from that list
+    if #freelist then 
+        pop(freelist)
+    end
+    luafs._freeblock(self, {i = e.blockmap[i]})
+    
+    -- reset that block with the new one
     e.blockmap[i] = bnr
+
+    -- adjust meta data
     e.size        = size
     e.ctime       = ctime
     e.mtime       = ctime
-    block_nr      = bnr -- kindof 'dirty' but the journal will be correct
+ 
+    -- kindof 'dirty' but the journal will be correct after going over the
+    -- journal at mount() time
+    block_nr      = bnr
+
     return 0
 end,
 
 _getblock = function(self, data, i, blocknr)
 
     if not data[i] and blocknr ~= nil then
-        local file = concat(self:_getblockstring(blocknr), '/')
+        local file = join(self:_getblockstring(blocknr), '/')
 
         print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>')..",file:"..file)
         fh = io.open(file, 'r')
@@ -667,6 +705,10 @@ unlink = function(self, path, ctime)
     -- decreased nlink from that
 
     fs_meta[path] = nil
+
+    if entity.nlink == 0 and entity.blockmap then
+        luafs._freeblock(self, entity.blockmap)
+    end
 
     return 0
 end,
@@ -867,7 +909,10 @@ serializemeta = function(self)
 
     -- write the main globals first
     local new_meta_fh = io.open(self.metafile..'.new', 'w')
-    new_meta_fh:write('block_nr,inode_start='..block_nr..','..inode_start.."\n")
+    new_meta_fh:write('block_nr,inode_start='..block_nr..','..inode_start..'\n')
+    if block_nr > 0 then
+        new_meta_fh:write('freelist={'..join(freelist, ',')..'}\n')
+    end
 
     -- loop over all filesystem entries
     for k,e in pairs(fs_meta) do
@@ -888,28 +933,28 @@ serializemeta = function(self)
             local meta_str = {}
             for key, value in pairs(e) do
                 if type(value) == "number" then
-                    arrayadd(meta_str, key..'='..value)
+                    push(meta_str, key..'='..value)
                 elseif type(value) == "string" then
-                    arrayadd(meta_str, key..'='..format("%q", value))
+                    push(meta_str, key..'='..format("%q", value))
                 end
             end
-            new_meta_fh:write(prefix,'={', concat(meta_str, ","))
+            new_meta_fh:write(prefix,'={', join(meta_str, ","))
 
             -- metadata:xattr
             if e.xattr then
                 local xattr_str = {}
                 for x,v in pairs(e.xattr) do
                     if type(v) == 'boolean' and v == true then
-                        arrayadd(xattr_str, '["'..x..'"]=true')
+                        push(xattr_str, '["'..x..'"]=true')
                         break
                     end
                     if type(v) == 'boolean' and v == false then
-                        arrayadd(xattr_str, '["'..x..'"]=false')
+                        push(xattr_str, '["'..x..'"]=false')
                         break
                     end
-                    arrayadd(xattr_str, '["'..x..'"]='..format('%q',v))
+                    push(xattr_str, '["'..x..'"]='..format('%q',v))
                 end
-                arrayadd(meta_str, 'xattr={'..concat(xattr_str, ',')..'}')
+                push(meta_str, 'xattr={'..join(xattr_str, ',')..'}')
             end
 
             -- 'real' data entry stuff
@@ -918,17 +963,17 @@ serializemeta = function(self)
 
                 -- directorylist
                 for d, _ in pairs(e.directorylist) do
-                    arrayadd(t, '["'..d..'"]=true')
+                    push(t, '["'..d..'"]=true')
                 end
-                new_meta_fh:write(',directorylist={',concat(t, ','),'}}\n')
+                new_meta_fh:write(',directorylist={',join(t, ','),'}}\n')
 
             elseif e.blockmap then
 
                 -- dump the blockmap
                 for i, v in pairs(e.blockmap) do
-                    arrayadd(t, '['..i..']='..v)
+                    push(t, '['..i..']='..v)
                 end
-                new_meta_fh:write(',blockmap={',concat(t, ','),'}}\n')
+                new_meta_fh:write(',blockmap={',join(t, ','),'}}\n')
             else
 
                 -- was a symlink, node,.. just close the tag
@@ -970,7 +1015,7 @@ fuse_options = {
 }
 
 for i,w in ipairs(fuse_options) do
-    arrayadd(options, w)
+    push(options, w)
 end
 
 -- check the mountpoint
@@ -1017,7 +1062,7 @@ for k, f in pairs(luafs) do
                         d[i] = "<ref>"
                     end
                 end
-                print("function:"..k.."(),args:"..concat(d, ","))
+                print("function:"..k.."(),args:"..join(d, ","))
             end
             -- really call the function
             return f(self, unpack(arg))
