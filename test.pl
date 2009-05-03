@@ -10,10 +10,13 @@ use Fcntl qw(SEEK_CUR);
 my $mntpoint = $ARGV[0] or die "Usage: $0 <mountpount>\n";
 my $file     = "$mntpoint/file";
 
-sysopen(my $fh, $file, O_CREAT|O_TRUNC|O_RDWR)
+my $fh;
+my $r;
+
+sysopen($fh, $file, O_CREAT|O_TRUNC|O_RDWR)
     or die "Error opening $file: $!\n";
 
-my $r = syswrite($fh, 'x' x 10, 4, 4);
+$r = syswrite($fh, 'x' x 10, 4, 4);
 if(!defined $r){
     die "Error syswrite: $!\n";
 }
@@ -39,5 +42,27 @@ if(!defined $r){
     die "Error truncate: $!\n";
 }
 
+$file = "$mntpoint/file2";
+
+sysopen($fh, $file, O_CREAT|O_RDWR)
+    or die "Error opening $file: $!\n";
+
+$r = syswrite($fh, 'x' x 4096, 4096, 0);
+if(!defined $r){
+    die "Error syswrite: $!\n";
+}
+$r = syswrite($fh, 'y' x 4096, 4096, 0);
+if(!defined $r){
+    die "Error syswrite: $!\n";
+}
+close($fh);
+
+sysopen($fh, $file, O_APPEND|O_RDWR)
+    or die "Error opening $file: $!\n";
+
+$r = syswrite($fh, 'z' x 4096, 4096, 0);
+if(!defined $r){
+    die "Error syswrite: $!\n";
+}
 
 close($fh) or die "Error closing $file: $!\n";
