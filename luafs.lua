@@ -39,9 +39,13 @@ local substr    = string.sub
 local floor     = math.floor
 local time      = os.time
 local join      = table.concat
-local push      = table.insert
+push            = table.insert  -- must be global for loadstring()!
 local pop       = table.remove
 local format    = string.format
+
+local function shift (t)
+    return pop(t,1)
+end
 
 --
 -- Helper functions
@@ -369,6 +373,7 @@ write = function(self, path, buf, offset, obj)
 
     -- BLOCKSIZE matches ours + offset falls on the start: just assign
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
+        print("blocksize matches and offset falls on boundary:"..findx)
 		
 		-- no need to read in block, it will be written entirely anyway
         data[findx]  = buf
@@ -434,18 +439,24 @@ write = function(self, path, buf, offset, obj)
 end,
 
 _getnextfreeblocknr = function (self)
-    local bnr = pop(freelist)
-    if not bnr then
+    print("freelist size:"..#freelist)
+    if #freelist > 0 then
+        return shift(freelist)
+    else
         block_nr = block_nr + 1
         return block_nr
     end
-    return bnr
 end,
 
 _freeblock = function (self, blocklist)
     for i,a in pairs(blocklist) do
         print("_freeblock():"..a)
         push(freelist, a)
+    end
+    print("n:"..#freelist..",block_nr:"..block_nr)
+    if #freelist == block_nr + 1 then
+        freelist = {}
+        block_nr = -1
     end
     return
 end,
@@ -491,7 +502,7 @@ _setblock = function(self, path, i, bnr, size, ctime)
     -- FIXME: hack ahead: if it does exist. Also pop the freelist when we're
     -- traversing the journal set block_nr ok for journal traversal
     if not self then
-        pop(freelist)
+        luafs._getnextfreeblocknr(self)
         if bnr > block_nr then
             block_nr = bnr
         end
@@ -594,6 +605,10 @@ truncate = function(self, path, size, ctime)
             self:_setblock(path, lindx, bnr, size)
         end
     else 
+
+        -- free the blocks
+        luafs._freeblock(self, m.blockmap)
+
         m.blockmap = {}
         m.ctime    = ctime
         m.mtime    = ctime
@@ -898,8 +913,16 @@ getxattr = function(self, path, name, size)
 end,
 
 statfs = function(self, path)
-    local o = {bs=BLOCKSIZE,blocks=4096,bfree=1024,bavail=3072,bfiles=1024,bffree=1024}
-    return 0, o.bs, o.blocks, o.bfree, o.bavail, o.bfiles, o.bffree
+    local nr_of_blocks      = floor(self.size/BLOCKSIZE)
+    local nr_of_free_blocks = nr_of_blocks - (block_nr + 1) + #freelist
+    return 
+        0,
+        BLOCKSIZE, 
+        nr_of_blocks, 
+        nr_of_free_blocks, 
+        nr_of_free_blocks, 
+        inode_start,
+        MAXINT
 end,
 
 serializemeta = function(self)
@@ -913,8 +936,12 @@ serializemeta = function(self)
     -- write the main globals first
     local new_meta_fh = io.open(self.metafile..'.new', 'w')
     new_meta_fh:write('block_nr,inode_start='..block_nr..','..inode_start..'\n')
-    if block_nr > 0 then
-        new_meta_fh:write('freelist={'..join(freelist, ',')..'}\n')
+    new_meta_fh:write('freelist={}\n')
+    if #freelist > 0 then
+        new_meta_fh:write('push(freelist,')
+        new_meta_fh:write(join(freelist, ')\npush(freelist,'))
+        new_meta_fh:write(')\n')
+    
     end
 
     -- loop over all filesystem entries
@@ -972,11 +999,14 @@ serializemeta = function(self)
 
             elseif e.blockmap then
 
+                new_meta_fh:write(',blockmap={}}\n')
+
                 -- dump the blockmap
                 for i, v in pairs(e.blockmap) do
-                    push(t, '['..i..']='..v)
+                    push(t, prefix..'.blockmap['..i..']='..v)
                 end
-                new_meta_fh:write(',blockmap={',join(t, ','),'}}\n')
+                --new_meta_fh:write(',blockmap={',join(t, ','),'}}\n')
+                new_meta_fh:write(join(t, '\n'), '\n')
             else
 
                 -- was a symlink, node,.. just close the tag
@@ -990,7 +1020,8 @@ serializemeta = function(self)
 end,
 
 metafile = "/home/tim/tmp/fs/test.lua",
-datadir  = "/home/tim/tmp/fs/luafs-data"
+datadir  = "/home/tim/tmp/fs/luafs-data",
+size     = 1 * 1024 * 1024 * 1024
 
 }
 
