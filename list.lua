@@ -6,6 +6,7 @@ local push = table.insert
 
 
 function P:new(bl)
+    print("LIST:new()")
 
     -- new list
     bl = bl or {}
@@ -26,12 +27,12 @@ function P:new(bl)
     bl = {}
     local mt = {
         __index = function(self, a)
-            --print("__index:"..a)
+            print("__index:"..a)
             return P.match(_bl,a)
         end,
 
         __newindex = function(self, a, v)
-            --print("__newindex:"..a..",v:"..v)
+            print("__newindex:"..a..",v:"..v)
             return P.insert(_bl, a, v)
         end
     }
@@ -50,7 +51,7 @@ function P:match(v)
     -- too big request? -> return nil
     local a = self.indx
     l = a[#a]
-    if v > l then
+    if not l or v > l then
         return nil
     end 
     
@@ -65,7 +66,7 @@ function P:match(v)
 end
 
 function P:insert(i, v)
-    --print("INSERT:i"..i..",v:"..v)
+
     local a = self.indx
     local nr_entries = #a
     local maxi = self.max
@@ -109,19 +110,15 @@ function P:insert(i, v)
     local diff
     local newa = {}
     for i,n in ipairs(a) do
---        print("checking:"..i..",n:"..n..",diff:"..(diff or '<>'))
-        
         if not diff then
             diff = self[n] - n
             push(newa, n)
         else 
             local newdiff = self[n] - n
---            print("newdiff:"..newdiff)
             if diff ~= newdiff then
                 diff = newdiff
                 push(newa, n)
             else
---                print("removing:"..i)
                 self[n] = nil
             end
         end
