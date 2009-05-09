@@ -4,39 +4,39 @@ local P = {}
 local sort = table.sort
 local push = table.insert
 
+
 function P:new(bl)
 
     -- new list
     bl = bl or {}
-    --setmetatable(bl, self)
-    --self.__index = self
 
-    -- add the index
-    local a = bl.indx or {}
+    -- add the index/max index
+    local index = {}
+    local max   = 0
     for n in pairs(bl) do
-        push(a, n) 
+        push(index, n) 
+        max = max > n and max or n
     end
-    sort(a)
-    bl.indx = a
-    bl.max  = 0
-    setmetatable(bl, P)
+    sort(index)
+    bl.indx = index
+    bl.max  = max
+
+    -- set the correct metatable 'tie'
+    local _bl = bl
+    bl = {}
+    local mt = {
+        __index = function(self, a)
+            --print("__index:"..a)
+            return P.match(_bl,a)
+        end,
+
+        __newindex = function(self, a, v)
+            --print("__newindex:"..a..",v:"..v)
+            return P.insert(_bl, a, v)
+        end
+    }
+    setmetatable(bl, mt)
     return bl
-end
-
-function P:__index(a)
-    --print("__index:"..a)
-    setmetatable(self, nil)
-    local r = P.match(self, a)
-    setmetatable(self, P)
-    return r
-end
-
-function P:__newindex(a, v)
-    --print("__newindex:"..a..",v:"..v)
-    setmetatable(self, nil)
-    local r = P.insert(self, a, v)
-    setmetatable(self, P)
-    return r
 end
 
 function P:match(v)
@@ -47,10 +47,11 @@ function P:match(v)
         return l 
     end
     
+    -- too big request? -> return nil
     local a = self.indx
     l = a[#a]
     if v > l then
-        return self[l] + (v - l)
+        return nil
     end 
     
     -- second: sorted
