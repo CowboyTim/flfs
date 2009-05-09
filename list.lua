@@ -8,8 +8,8 @@ function P:new(bl)
 
     -- new list
     bl = bl or {}
-    setmetatable(bl, self)
-    self.__index = self
+    --setmetatable(bl, self)
+    --self.__index = self
 
     -- add the index
     local a = bl.indx or {}
@@ -19,7 +19,24 @@ function P:new(bl)
     sort(a)
     bl.indx = a
     bl.max  = 0
+    setmetatable(bl, P)
     return bl
+end
+
+function P:__index(a)
+    --print("__index:"..a)
+    setmetatable(self, nil)
+    local r = P.match(self, a)
+    setmetatable(self, P)
+    return r
+end
+
+function P:__newindex(a, v)
+    --print("__newindex:"..a..",v:"..v)
+    setmetatable(self, nil)
+    local r = P.insert(self, a, v)
+    setmetatable(self, P)
+    return r
 end
 
 function P:match(v)
@@ -63,7 +80,7 @@ function P:insert(i, v)
                 self[i] = v
                 push(a, i)
             else
-                local old_i = self:match(i+1)
+                local old_i = P.match(self, i+1)
                 self[i] = v
                 push(a, i)
                 if not self[i+1] then
