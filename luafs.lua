@@ -2,6 +2,8 @@
 
 local fuse = require 'fuse'
 
+list = require 'list'
+
 local S_WID     = 1 --world
 local S_GID     = 2^3 --group
 local S_UID     = 2^6 --owner
@@ -46,6 +48,7 @@ local format    = string.format
 local function shift (t)
     return pop(t,1)
 end
+
 
 --
 -- Helper functions
@@ -336,7 +339,7 @@ create = function(self, path, mode, flags, cuid, cgid, ctime)
         mode = mk_mode(6,4,4)
     end
     fs_meta[path] = new_meta(set_bits(mode, S_IFREG), cuid, cgid, ctime)
-    fs_meta[path].blockmap = {}
+    fs_meta[path].blockmap = list:new()
     fs_meta[parent].directorylist[file] = fs_meta[path]
     fs_meta[parent].ctime = ctime
     fs_meta[parent].mtime = ctime
@@ -574,6 +577,8 @@ truncate = function(self, path, size, ctime)
 
         -- update blockmap
         local lindx = floor(size/BLOCKSIZE)
+
+        -- FIXME: #map is not going to work with list(), nil neither
         local map   = m.blockmap
         for i=lindx+1,#map do
             map[i] = nil
@@ -609,7 +614,7 @@ truncate = function(self, path, size, ctime)
         -- free the blocks
         luafs._freeblock(self, m.blockmap)
 
-        m.blockmap = {}
+        m.blockmap = list:new()
         m.ctime    = ctime
         m.mtime    = ctime
         m.size     = 0
@@ -999,14 +1004,10 @@ serializemeta = function(self)
 
             elseif e.blockmap then
 
-                new_meta_fh:write(',blockmap={}}\n')
-
                 -- dump the blockmap
-                for i, v in pairs(e.blockmap) do
-                    push(t, prefix..'.blockmap['..i..']='..v)
-                end
-                --new_meta_fh:write(',blockmap={',join(t, ','),'}}\n')
-                new_meta_fh:write(join(t, '\n'), '\n')
+                new_meta_fh:write(',blockmap=list:new{',
+                    list.tostring(e.blockmap),
+                '}}\n')
             else
 
                 -- was a symlink, node,.. just close the tag

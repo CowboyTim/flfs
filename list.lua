@@ -3,32 +3,51 @@ local P = {}
 
 local sort = table.sort
 local push = table.insert
+local join = table.concat
 
+function P:tostring()
+    local l = {}
+    local t = {}
+    local list = self._list
+    for i, v in ipairs(list.indx) do
+        push(t, '['..v..']='..list[v])
+        push(l, '['..i..']='..v)
+    end
+    local k = {}
+    push(k, 'max='..list.max)
+    push(k, 'indx={'..join(l, ',')..'}')
+    push(k, 'map={'..join(t, ',')..'}')
+    return join(k, ',')
+end
 
-function P:new(bl)
+function P:new(data)
     print("LIST:new()")
 
     -- new list
-    bl = bl or {}
+    local bl = {}
 
     -- add the index/max index
     local index = {}
-    local max   = 0
-    for n in pairs(bl) do
+    local map   = data and data.map  or {}
+    local max   = data and data.max  or 0
+    for n, v in pairs(map) do
+        bl[n] = v
         push(index, n) 
         max = max > n and max or n
     end
     sort(index)
-    bl.indx = index
-    bl.max  = max
+    bl.indx  = index
+    bl.max   = max
 
     -- set the correct metatable 'tie'
     local _bl = bl
-    bl = {}
+    bl = {_list = _bl}
     local mt = {
         __index = function(self, a)
             print("__index:"..a)
-            return P.match(_bl,a)
+            local r = P.match(_bl,a)
+            print("__index returns:"..a..",r:"..tostring(r))
+            return r
         end,
 
         __newindex = function(self, a, v)
@@ -49,20 +68,23 @@ function P:match(v)
     end
     
     -- too big request? -> return nil
-    local a = self.indx
-    l = a[#a]
-    if not l or v > l then
+    if v > self.max then
         return nil
     end 
     
     -- second: sorted
+    local a = self.indx
     for _,i in ipairs(a) do
         if v <= i then
             return self[l] + (v - l)
         end
         l = i
     end
-    return self[l] + (v - l)
+
+    if l then
+        return self[l] + (v - l)
+    end
+    return nil
 end
 
 function P:insert(i, v)
