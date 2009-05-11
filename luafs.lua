@@ -142,7 +142,7 @@ local empty_block = join(t)
 --
 inode_start = 1
 block_nr    = -1
-freelist    = {}
+freelist    = list:new()
 fs_meta     = {
     ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 }
@@ -442,25 +442,12 @@ write = function(self, path, buf, offset, obj)
 end,
 
 _getnextfreeblocknr = function (self)
-    print("freelist size:"..#freelist)
-    if #freelist > 0 then
-        return shift(freelist)
-    else
-        block_nr = block_nr + 1
-        return block_nr
-    end
+    block_nr = block_nr + 1
+    return block_nr
 end,
 
 _freeblock = function (self, blocklist)
-    for i,a in pairs(blocklist) do
-        print("_freeblock():"..a)
-        push(freelist, a)
-    end
-    print("n:"..#freelist..",block_nr:"..block_nr)
-    if #freelist == block_nr + 1 then
-        freelist = {}
-        block_nr = -1
-    end
+    freelist = list.merge(freelist, blocklist)
     return
 end,
 
@@ -511,9 +498,9 @@ _setblock = function(self, path, i, bnr, size, ctime)
         end
     end
 
-    -- free the prevous block
+    -- free the previous block
     if e.blockmap[i] then
-        luafs._freeblock(self, {i = e.blockmap[i]})
+        luafs._freeblock(self, list:new({i=e.blockmap[i]}))
     end
     
     -- reset that block with the new one
@@ -941,13 +928,9 @@ serializemeta = function(self)
     -- write the main globals first
     local new_meta_fh = io.open(self.metafile..'.new', 'w')
     new_meta_fh:write('block_nr,inode_start='..block_nr..','..inode_start..'\n')
-    new_meta_fh:write('freelist={}\n')
-    if #freelist > 0 then
-        new_meta_fh:write('push(freelist,')
-        new_meta_fh:write(join(freelist, ')\npush(freelist,'))
-        new_meta_fh:write(')\n')
-    
-    end
+    new_meta_fh:write('freelist = list:new{')
+    new_meta_fh:write(list.tostring(freelist))
+    new_meta_fh:write('}\n')
 
     -- loop over all filesystem entries
     for k,e in pairs(fs_meta) do
