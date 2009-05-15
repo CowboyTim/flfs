@@ -12,7 +12,8 @@ function P:tostring()
     for i, v in ipairs(bl.indx) do
         --print("ts:"..tostring(i)..","..tostring(v))
         push(t, '['..v..']='..bl[v])
-        push(l, '['..v..']='..bl.list[v])
+        local b = bl[v]
+        push(l, '['..b..']='..bl.list[b])
     end
     local k = {}
     push(k, 'list={'..join(l, ',')..'}')
@@ -24,19 +25,18 @@ function P:new(data)
     --print("LIST:new()")
 
     -- new list
-    local bl = {}
+    local bl = data or {}
 
     -- add the index index
     local index = {}
-    local list  = data and data.list or {}
-    local map   = data and data.map  or {}
-    for n, v in pairs(list) do
+    local map   = data.map or {}
+    for n, v in pairs(map) do
         bl[n] = map[n]
         push(index, n) 
     end
     sort(index)
-    bl.indx  = index
-    bl.list  = list
+    bl.indx = index
+    bl.list = data.list or {}
 
     -- set the correct metatable 'tie'
     local _bl = bl
@@ -75,7 +75,7 @@ function P:match(v)
     local list = self.list
     
     -- too big request? -> return nil
-    if v > list[index[#index]] then
+    if v > index[#index] + (list[self[index[#index]]] - self[index[#index]]) then
         return nil
     end 
     
@@ -84,7 +84,7 @@ function P:match(v)
         local a = index[j]
         --print("testing:i:"..j..":v:"..v..","..tostring(a)..",list:"..tostring(list[a]))
         -- FIXME: implement faster stop in case of non match
-        if a and v >= a and v <= list[a] then
+        if v >= a and v <= a + (list[self[a]] - self[a]) then
             return self[a] + (v - a)
         end
     end
@@ -108,8 +108,8 @@ function P:merge(b)
     --print("m:"..m)
     for i,v in ipairs(index_b) do
         --print("bi:"..i..",bv:"..v)
-        a.list[m] = (list_b[v] - (i-1)) + m
-        a[m]      = self_b[v]
+        a.list[self[m]] = (list_b[self[v]] - (i-1)) + m
+        a[m]            = self_b[v]
         push(a.indx, m)
         m = m +1
     end
@@ -130,39 +130,41 @@ function P:insert(i, v)
     if #index == 0 then
         -- empty list: add the entry
         self[i] = v
-        list[i] = i
+        list[v] = i
         push(index, i)
         return
     end
 
     local last_index = index[#index]
     --print("last_index:"..last_index)
+    local last_block = self[last_index]
+    local list_i     = list[self[i]]
 
-    if i == list[last_index] + 1 and self[last_index] + list[last_index] + 1 - last_index == v then
+    if i == list[last_block] + 1 and  last_block + list[last_block] + 1 - last_index == v then
         -- plain append
         --print("plain append")
-        list[last_index] = list[last_index] + 1
+        list[last_block] = list[last_block] + 1
         return
-    elseif i > list[last_index] then
+    elseif i > list[last_block] then
         -- sparse append: just add
         --print("sparse append")
         self[i] = v
-        list[i] = i
+        list[v] = i
         push(index, i)
         return
-    elseif list[i] and list[i] - i == 0 then
+    elseif list_i and list_i - i == 0 then
         -- item exists and is size 1; just update
         --print("hash append")
         self[i] = v
-    elseif list[i] then
+    elseif list_i then
         -- at the start. NOTE: i+1 will not exist, as size > 1
         --print("start append")
         local n = i+1
-        list[n] = list[i]
-        self[n] = self[i] + 1
+        self[n]         = self[i] + 1
+        list[self[n]]   = list_i
         push(index, n)
-        list[i]   = i
-        self[i]   = v
+        self[i]         = v
+        list[self[i]]   = i
 
 
     else
@@ -171,23 +173,24 @@ function P:insert(i, v)
         for j=1,#index do
             -- FIXME: implement faster stop in case of non match
             local a = index[j]
+            list_i  = list[self[a]]
             --print("a:"..a..",i:"..i..",list[a]:"..list[a]..",self:"..self[a])
-            if i >= a and i <= list[a] then
-                if list[a] - i == 0 then
+            if i >= a and i <= list_i then
+                if list_i - i == 0 then
                     -- entirely at the end: just add and shrink
-                    list[i] = i
                     self[i] = v
-                    list[a] = list[a] - 1
+                    list[self[i]] = i
+                    list[self[a]] = list_i - 1
                     push(index, i)
                 else
                     -- in the middle
-                    local old = list[a]
-                    list[a] = i - 1
-                    list[i] = i
+                    local old = list_i
+                    list[self[a]] = i - 1
                     self[i] = v
+                    list[self[i]] = i
                     push(index, i)
-                    list[i+1] = old
                     self[i+1] = self[a] + (i - a) + 1
+                    list[self[i+1]] = old
                     push(index, i+1)
                 end
                 break
@@ -211,12 +214,12 @@ function P:_canonicalize()
     for i=2,#index do
         --print("iaaaaaaaaaaaaaaaaaaaaaaa:"..i)
         local previous_index = index[l]
-        local p = list[previous_index] + 1
+        local p = list[self[previous_index]] + 1
         if index[i] and index[i] == previous_index + p
                     and self[index[i]] == self[previous_index] + p then
             self[index[i]] = nil
-            list[index[l]] = list[index[i]]
-            list[index[i]] = nil
+            list[self[index[l]]] = list[self[index[i]]]
+            list[self[index[i]]] = nil
         else 
             push(newindex, index[i])
             l = i
