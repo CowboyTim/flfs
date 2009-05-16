@@ -4,13 +4,14 @@ local P = {}
 local sort = table.sort
 local push = table.insert
 local join = table.concat
+local pop  = table.remove
 
 function P:tostring()
     local l = {}
     local t = {}
-    local bl = rawget(self, '_list')
+    local bl = rawget(self, '_original')
     for i, v in ipairs(bl.indx) do
-        ----print("ts:"..tostring(i)..","..tostring(v))
+        --print("ts:"..tostring(i)..","..tostring(v))
         push(t, '['..v..']='..bl[v])
         local b = bl[v]
         push(l, '['..b..']='..bl.list[b])
@@ -22,7 +23,7 @@ function P:tostring()
 end
 
 function P:new(data)
-    ----print("LIST:new()")
+    --print("LIST:new()")
 
     -- new list
     local bl = data or {}
@@ -40,18 +41,18 @@ function P:new(data)
 
     -- set the correct metatable 'tie'
     local _bl = bl
-    bl = {_list = _bl}
+    bl = {_original = _bl}
     local mt = {
         __index = function(self, a)
-            ----print("__index:"..a)
+            --print("__index:"..a)
             local r = P.match(_bl,a)
-            ----print("__index returns:"..a..",r:"..tostring(r))
+            --print("__index returns:"..a..",r:"..tostring(r))
             return r
             --return P.match(_bl,a)
         end,
 
         __newindex = function(self, a, v)
-            ----print("__newindex:"..a..",v:"..v)
+            --print("__newindex:"..a..",v:"..v)
             return P.insert(_bl, a, v)
         end,
     }
@@ -93,6 +94,29 @@ function P:match(v)
     return nil
 end
 
+function P:getlast()
+    local bl = rawget(self, '_original')
+    local index = bl.indx
+    if #index == 0 then
+        return nil
+    end
+    
+    local block = nil
+    local list = bl.list
+    local last_startblock = bl[index[#index]]
+    if list[last_startblock] == last_startblock then
+        list[last_startblock] = nil
+        bl[index[#index]]   = nil
+        pop(index)
+        block = last_startblock
+    else
+        block = list[last_startblock]
+        list[last_startblock] = list[last_startblock] - 1
+    end
+
+    return block
+end
+
 function P:truncate(i)
 end
 
@@ -114,38 +138,47 @@ function pairsByKeys (t, f)
   return iter
 end
 
-function P:merge(b)
-    local self_a  = rawget(self, '_list')
-    local self_b  = rawget(b,'_list')
+function P:mergetofreelist(b)
+    local self_a  = rawget(self, '_original')
+    local self_b  = rawget(b,'_original')
     --print("merge:"..P.tostring(self)..",b:"..P.tostring(b))
     local list_a  = self_a.list
     local list_b  = self_b.list
-    if #(self_a.indx) ~= 0 then
-        m = self_a.indx[#(self_a.indx)] + 1
-    end
-    ----print("m:"..m)
     for i,v in pairs(list_b) do
-        ----print("bi:"..i..",bv:"..v)
-        self_a[m]       = i
-        list_a[i]       = v
-        push(self_a.indx, m)
-        m = m +1
+        list_a[i] = v
     end
     
-    ----print("before cc:"..P.tostring({_list=self}))
-    --
+    --print("before cc:"..P.tostring({_original=self}))
+    local newlist = {}
+    local last = nil
+    local last_index = nil
     for i,v in pairsByKeys(list_a) do
-        --print("i:"..i..",v:"..v)
+        --print("i:"..i..",v:"..v..",last:"..tostring(last))
+        if not last then
+            newlist[i] = v
+        else
+            if last + 1 == i then
+                newlist[last_index] = v
+            else
+                newlist[i] = v
+            end
+        end
+        last = v
+        last_index = i
     end
-    
-
-    P._canonicalize(self_a)
-    return self
+    local newself = {}
+    local m = 0
+    for i,v in pairs(newlist) do
+        --print("i:"..i..",r:"..v..",m:"..m)
+        newself[m] = i
+        m = m + (v - i) + 1
+    end
+    return P.new({}, {["map"]=newself, ["list"]=newlist})
 end
 
 function P:insert(i, v)
 
-    --print("insert:i:"..i..",v:"..v..":"..P.tostring({_list=self}))
+    --print("insert:i:"..i..",v:"..v..":"..P.tostring({_original=self}))
 
     local index = self.indx
     local list  = self.list
@@ -158,70 +191,73 @@ function P:insert(i, v)
         return
     end
 
-    local last_index = index[#index]
-    local last_block = self[last_index]
-    local list_i     = list[self[i]]
-    local next_block = 1 + list[last_block]
-    local next_index = last_index + next_block - last_block
+    local list_i = list[self[i]]
 
-    if i >= next_index and v > next_block then
-        -- sparse append: just add
-        --print("sparse append")
-        self[i] = v
-        list[v] = v
-        push(index, i)
-        return
-    elseif i == next_index and v == next_block then
-        -- plain append
-        --print("plain append")
-        list[last_block] = v
-        return
-    elseif list_i and list_i == self[i] then
-        -- item exists and is size 1; just update
-        --print("hash append")
-        list[self[i]] = nil
-        self[i] = v
-        list[v] = v
-    elseif list_i then
-        -- at the start. NOTE: i+1 will not exist, as size > 1
-        --print("start append")
-        local n = i+1
-        self[n]         = self[i] + 1
-        list[self[n]]   = list_i
-        push(index, n)
-        self[i]         = v
-        list[v]         = v
-
-
+    if list_i then
+        if list_i == self[i] then
+            -- item exists and is size 1; just update
+            --print("hash append")
+            list[self[i]] = nil
+            self[i] = v
+            list[v] = v
+        else
+            -- at the start. NOTE: i+1 will not exist, as size > 1
+            --print("start append")
+            local n = i+1
+            self[n]         = self[i] + 1
+            list[self[n]]   = list_i
+            push(index, n)
+            self[i]         = v
+            list[v]         = v
+        end
     else
-        --print("middle insert")
-    
-        -- item didn't exist directly: search for the base
-        for j=1,#index do
-            -- FIXME: implement faster stop in case of non match
-            local a = index[j]
-            list_i  = list[self[a]]
-            --print("a:"..a..",i:"..i..",list[a]:"..list_i..",self:"..self[a])
-            if i >= a and i <= a + (list_i - self[a]) then
-                if a + list_i - self[a]  == i then
-                    --print("middle insert:at last")
-                    -- entirely at the end: just add and shrink
-                    self[i] = v
-                    list[v] = v
-                    list[self[a]] = list_i - 1
-                    push(index, i)
-                else
-                    --print("middle insert:not at last")
-                    -- in the middle
-                    list[self[a]] = self[a] + (i - a) - 1
-                    self[i] = v
-                    list[v] = v
-                    push(index, i)
-                    self[i+1] = self[a] + (i - a) + 1
-                    list[self[i+1]] = list_i
-                    push(index, i+1)
+        local last_index = index[#index]
+        local last_block = self[last_index]
+        local next_block = 1 + list[last_block]
+        local next_index = last_index + next_block - last_block
+        if i == next_index and v == next_block then
+            -- plain append
+            --print("plain append")
+            list[last_block] = v
+            return
+        elseif i >= next_index and v > next_block then
+            -- sparse append: just add
+            --print("sparse append")
+            self[i] = v
+            list[v] = v
+            push(index, i)
+            return
+
+        else
+            --print("middle insert")
+        
+            -- item didn't exist directly: search for the base
+            for j=1,#index do
+                -- FIXME: implement faster stop in case of non match
+                local a = index[j]
+                list_i  = list[self[a]]
+                --print("a:"..a..",i:"..i..",list[a]:"..list_i..",self:"..self[a])
+                if i >= a and i <= a + (list_i - self[a]) then
+                    if a + list_i - self[a]  == i then
+                        --print("middle insert:at last")
+                        -- entirely at the end: just add and shrink
+                        self[i] = v
+                        list[v] = v
+                        list[self[a]] = list_i - 1
+                        push(index, i)
+                    else
+                        --print("middle insert:not at last")
+                        -- in the middle
+                        list[self[a]] = self[a] + (i - a) - 1
+                        self[i] = v
+                        list[v] = v
+                        push(index, i)
+                        self[i+1] = self[a] + (i - a) + 1
+                        list[self[i+1]] = list_i
+                        push(index, i+1)
+                    end
+                    break
                 end
-                break
             end
         end
     end
@@ -232,7 +268,7 @@ function P:insert(i, v)
 end
 
 function P:_canonicalize()
-    --print("_canonicalize:"..P.tostring({_list = self}))
+    --print("_canonicalize:"..P.tostring({_original = self}))
     local index = self.indx
     local list  = self.list
 
