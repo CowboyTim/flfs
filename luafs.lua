@@ -442,12 +442,17 @@ write = function(self, path, buf, offset, obj)
 end,
 
 _getnextfreeblocknr = function (self)
-    block_nr = block_nr + 1
-    return block_nr
+    local next_free_block = list.getlast(freelist)
+    if not next_free_block then
+        -- watermark shift
+        block_nr = block_nr + 1
+        next_free_block = block_nr
+    end
+    return next_free_block
 end,
 
 _freeblock = function (self, blocklist)
-    freelist = list.merge(freelist, blocklist)
+    freelist = list.mergetofreelist(freelist, blocklist)
     return
 end,
 
