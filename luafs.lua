@@ -1034,7 +1034,11 @@ fuse_options = {
     '-onegative_timeout=0',
     '-oattr_timeout=0',
     '-ouse_ino',
-    '-oreaddir_ino'
+    '-oreaddir_ino',
+    '-omax_read=131072',
+    '-omax_readahead=131072',
+    '-omax_write=131072',
+
 }
 
 for i,w in ipairs(fuse_options) do
@@ -1082,7 +1086,7 @@ for k, f in pairs(luafs) do
                     if type(v) ~= 'table' then 
                         d[i] = v 
                     else
-                        d[i] = "<ref>"
+                        d[i] = tostring(v)
                     end
                 end
                 print("function:"..k.."(),args:"..join(d, ","))
