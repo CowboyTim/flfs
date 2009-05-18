@@ -44,10 +44,27 @@ local time      = os.time
 local join      = table.concat
 push            = table.insert  -- must be global for loadstring()!
 local pop       = table.remove
+local sort      = table.sort
 local format    = string.format
 
-local function shift (t)
+local function shift(t)
     return pop(t,1)
+end
+
+function pairsByKeys(t, f)
+    local a = {}
+    for n in pairs(t) do 
+        push(a, n) 
+    end
+    sort(a, f)
+    local i = 0      -- iterator variable
+    local iter = function ()   -- iterator function
+        i = i + 1
+        if a[i] == nil then return nil
+        else return a[i], t[a[i]]
+        end
+    end
+    return iter
 end
 
 
@@ -74,7 +91,7 @@ local tab = {  -- tab[i+1][j+1] = xor(i, j) where i,j in (0-15)
   {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, },
 }
 
-local function _bxor (a,b)
+local function _bxor(a,b)
     local res, c = 0, 1
     while a > 0 and b > 0 do
         local a2, b2 = a % 16, b % 16
@@ -449,7 +466,8 @@ _getnextfreeblocknr = function (self, meta)
     if not nextfreeblock then 
         next_free_stride = next(freelist)
         if next_free_stride ~= nil then
-            print('_getnextfreeblocknr:'..next_free_stride..',size:'..freelist[next_free_stride])
+            print('_getnextfreeblocknr:'..next_free_stride..
+                  ',size:'..freelist[next_free_stride])
             if freelist[next_free_stride] - next_free_stride > STRIDE then
                 freelist[next_free_stride] = freelist[next_free_stride] - STRIDE
                 next_free_stride = freelist[next_free_stride] + 1
@@ -957,6 +975,23 @@ statfs = function(self, path)
         MAXINT
 end,
 
+_canonicalize_freelist = function(self)
+    local last
+    for i,v in pairsByKeys(freelist) do
+        if not last then
+            last = i
+        else
+            if i == freelist[last] + 1 then
+                freelist[last] = freelist[i]
+                freelist[i]    = nil
+            else
+                last = i
+            end
+        end
+    end
+    return
+end,
+
 serializemeta = function(self)
 
     -- a hash that transfers inode numbers to the first dumped path, this
@@ -968,6 +1003,9 @@ serializemeta = function(self)
     -- write the main globals first
     local new_meta_fh = io.open(self.metafile..'.new', 'w')
     new_meta_fh:write('block_nr,inode_start='..block_nr..','..inode_start..'\n')
+
+    -- write the freelist
+    self:_canonicalize_freelist()
     local fl = {}
     for i, v in pairs(freelist) do
         push(fl, '['..i..']='..v)
