@@ -533,7 +533,7 @@ _writeblock = function(self, path, blocknr, blockdata)
 
     local file = join(f, '/')
     print("_writeblock():"..file)
-    fh = io.open(file, 'w')
+    fh = assert(io.open(file, 'w'))
     fh:write(blockdata)
     fh:close()
 end,
