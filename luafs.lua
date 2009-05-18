@@ -32,6 +32,7 @@ local ENOATTR      = -516
 local ENOTSUPP     = -524
 
 local BLOCKSIZE    = 4096
+local STRIDE       = 64
 local MAXINT       = 2^32 -1
 
 --
@@ -141,8 +142,8 @@ local empty_block = join(t)
 -- globally to go over the journal easy
 --
 inode_start = 1
-block_nr    = -1
-freelist    = list:new()
+block_nr    = 0 
+freelist    = {}
 fs_meta     = {
     ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 }
@@ -424,7 +425,7 @@ write = function(self, path, buf, offset, obj)
 
     -- rewrite all blocks to disk
     for i, _ in pairs(dirty) do
-        dirty[i] = self:_getnextfreeblocknr()
+        dirty[i] = self:_getnextfreeblocknr(entity)
 
         self:_writeblock(path, dirty[i], data[i])
 
@@ -441,18 +442,51 @@ write = function(self, path, buf, offset, obj)
     return #buf
 end,
 
-_getnextfreeblocknr = function (self)
-    local next_free_block = list.getlast(freelist)
-    if not next_free_block then
-        -- watermark shift
-        block_nr = block_nr + 1
-        next_free_block = block_nr
+_getnextfreeblocknr = function (self, meta)
+    meta.freelist = meta.freelist or {}
+    local bfree = meta.freelist
+    local nextfreeblock = next(bfree)
+    if not nextfreeblock then 
+        next_free_stride = next(freelist)
+        if next_free_stride ~= nil then
+            print('_getnextfreeblocknr:'..next_free_stride..',size:'..freelist[next_free_stride])
+            if freelist[next_free_stride] - next_free_stride > STRIDE then
+                freelist[next_free_stride] = freelist[next_free_stride] - STRIDE
+                next_free_stride = freelist[next_free_stride] + 1
+            else 
+                print('_getnextfreeblocknr:setting to nil:'..next_free_stride)
+                freelist[next_free_stride] = nil
+            end
+        else
+            -- watermark shift
+            next_free_stride = block_nr
+            block_nr = block_nr + STRIDE
+        end
+        nextfreeblock = next_free_stride
+        bfree[nextfreeblock + 1] = nextfreeblock + STRIDE - 1
+    else
+        if     bfree[nextfreeblock] ~= nextfreeblock 
+           and not bfree[nextfreeblock+1]
+           and nextfreeblock < STRIDE*floor(nextfreeblock/STRIDE) + STRIDE then
+            bfree[nextfreeblock+1] = bfree[nextfreeblock]
+        end
+        bfree[nextfreeblock]   = nil
     end
-    return next_free_block
+    return nextfreeblock
 end,
 
-_freeblock = function (self, blocklist)
-    freelist = list.mergetofreelist(freelist, blocklist)
+_addtofreelist = function (self, blocklist)
+    for i,b in pairs(blocklist) do
+        i = STRIDE * floor(i/STRIDE)
+        b = STRIDE * floor(b/STRIDE) + STRIDE - 1
+        print("_addtofreelist:i:"..i..",b:"..b)
+        freelist[i] = b
+    end
+    return
+end,
+
+_freesingleblock = function (self, b, meta)
+    meta.freelist[b] = b
     return
 end,
 
@@ -497,7 +531,7 @@ _setblock = function(self, path, i, bnr, size, ctime)
     -- FIXME: hack ahead: if it does exist. Also pop the freelist when we're
     -- traversing the journal set block_nr ok for journal traversal
     if not self then
-        luafs._getnextfreeblocknr(self)
+        luafs._getnextfreeblocknr(self, e)
         if bnr > block_nr then
             block_nr = bnr
         end
@@ -505,7 +539,7 @@ _setblock = function(self, path, i, bnr, size, ctime)
 
     -- free the previous block
     if e.blockmap[i] then
-        luafs._freeblock(self, list:new({i=e.blockmap[i]}))
+        luafs._freesingleblock(self, e.blockmap[i], e)
     end
     
     -- reset that block with the new one
@@ -582,7 +616,7 @@ truncate = function(self, path, size, ctime)
             local str = self:_getblock({}, lindx, map[lindx])
 
             -- always write as a new block
-            local bnr = self:_getnextfreeblocknr()
+            local bnr = self:_getnextfreeblocknr(m)
 
             self:_writeblock(path, bnr, substr(str,0,size%BLOCKSIZE))
 
@@ -603,9 +637,10 @@ truncate = function(self, path, size, ctime)
         end
     else 
 
-        -- free the blocks
-        luafs._freeblock(self, m.blockmap)
+        -- free the blocks: just add to the filesystem's freelist
+        luafs._addtofreelist(self, (rawget(m.blockmap, '_original')).list)
 
+        m.freelist = nil
         m.blockmap = list:new()
         m.ctime    = ctime
         m.mtime    = ctime
@@ -722,7 +757,7 @@ unlink = function(self, path, ctime)
     fs_meta[path] = nil
 
     if entity.nlink == 0 and entity.blockmap then
-        luafs._freeblock(self, entity.blockmap)
+        luafs._addtofreelist(self, (rawget(entity.blockmap, '_original')).list)
     end
 
     return 0
@@ -933,9 +968,11 @@ serializemeta = function(self)
     -- write the main globals first
     local new_meta_fh = io.open(self.metafile..'.new', 'w')
     new_meta_fh:write('block_nr,inode_start='..block_nr..','..inode_start..'\n')
-    new_meta_fh:write('freelist = list:new{')
-    new_meta_fh:write(list.tostring(freelist))
-    new_meta_fh:write('}\n')
+    local fl = {}
+    for i, v in pairs(freelist) do
+        push(fl, '['..i..']='..v)
+    end
+    new_meta_fh:write('freelist = {', join(fl, ','), '}\n')
 
     -- loop over all filesystem entries
     for k,e in pairs(fs_meta) do
@@ -992,10 +1029,22 @@ serializemeta = function(self)
 
             elseif e.blockmap then
 
+                -- dump the freelist
+                if e.freelist then
+                    fl = {}
+                    for i, v in pairs(e.freelist) do
+                        push(fl, '['..i..']='..v)
+                    end
+                    new_meta_fh:write(',freelist={',
+                        join(fl, ','),
+                    '}')
+                end
+
                 -- dump the blockmap
                 new_meta_fh:write(',blockmap=list:new{',
                     list.tostring(e.blockmap),
                 '}}\n')
+
             else
 
                 -- was a symlink, node,.. just close the tag
@@ -1075,12 +1124,12 @@ if debug == 0 then
     function print() end
 end
 
-for k, f in pairs(luafs) do
-    if type(f) == 'function' then
-        luafs[k] = function(self,...) 
-            
-            -- debug?
-            if debug then
+-- debug?
+if debug then
+    for k, f in pairs(luafs) do
+        if type(f) == 'function' then
+            luafs[k] = function(self,...) 
+                
                 local d = {}
                 for i,v in ipairs(arg) do
                     if type(v) ~= 'table' then 
@@ -1090,9 +1139,10 @@ for k, f in pairs(luafs) do
                     end
                 end
                 print("function:"..k.."(),args:"..join(d, ","))
+
+                -- really call the function
+                return f(self, unpack(arg))
             end
-            -- really call the function
-            return f(self, unpack(arg))
         end
     end
 end
