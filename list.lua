@@ -312,15 +312,19 @@ function P:_canonicalize()
     local l = 1
     for i=2,#index do
         --print("iaaaaaaaaaaaaaaaaaaaaaaa:"..i)
-        local previous_block = list[self[index[l]]]
-        if index[i] and previous_block + 1 == self[index[i]] 
-                    and index[i] - index[l] == previous_block - self[index[l]] + 1
+        local previous_index       = index[l]
+        local previous_block       = list[self[previous_index]]
+        local current_index        = index[i]
+        local current_block_start  = self[index[i]]
+        if      previous_block + 1       == current_block_start
+            and current_index - previous_index 
+                                         == previous_block - self[previous_index] + 1
         then
-            list[self[index[l]]] = list[self[index[i]]]
-            list[self[index[i]]] = nil
-            self[index[i]] = nil
+            list[self[previous_index]] = list[current_block_start]
+            list[current_block_start]  = nil
+            self[current_index]        = nil
         else 
-            push(newindex, index[i])
+            push(newindex, current_index)
             l = i
         end
     end
