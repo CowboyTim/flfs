@@ -622,10 +622,12 @@ truncate = function(self, path, size, ctime)
         -- update blockmap
         local lindx = floor(size/BLOCKSIZE)
 
+        list.truncate(m.blockmap, lindx + 1)
+
         -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
         -- this init mount()), the block was written allready
         if self then
-            local str = self:_getblock({}, lindx, map[lindx])
+            local str = self:_getblock({}, lindx, m.blockmap[lindx])
 
             -- always write as a new block
             local bnr = self:_getnextfreeblocknr(m)
