@@ -237,50 +237,62 @@ local p = list:new()
         print(myconcat(pt, ','))
     end
 
---print(getmetatable(t))
---print(list.tostring(t))
---
---print("PERFORMANCE TEST")
---
---for i=0,100 do
---    local tbl = {
---        list={[55]=121, [131]=131,  [33]=33, [667]=667,  [800]=800, [710]=711},   
---        map ={[0]=55, [76]=131, [77]=33, [78]=667, [100]=800, [121]=710}
---    }
---    tbl = list:new(tbl)
---    for i=0, 130 do
---        local l = tbl[i]
---    end
---end
---
---for i,e in ipairs(tbl.indx) do
---    print("i:"..i..",e:"..e)
---end
---print('start')
---
---n = list:new()
---
---for i=0,100 do
---    n[i] = 6666666666+i
---end
---for i=100,200 do
---    n[i] =77777+i-100
---end
---for i=200,3000 do
---    n[i] = 99999+i-200
---end
---
---print(list.tostring(n))
---print("start:rewrite")
---
---for k=1,3000 do
---oldprint("doing k:"..k)
---for i=0,3000 do
---    n[i] = k*3000 +i+k
---end
---end
---
---print = oldprint
---
---
---oldprint(list.tostring(n))
+print(getmetatable(t))
+print(list.tostring(t))
+
+print("PERFORMANCE TEST")
+
+for i=0,100 do
+    local tbl = {
+        list={[55]=121, [131]=131,  [33]=33, [667]=667,  [800]=800, [710]=711},   
+        map ={[0]=55, [76]=131, [77]=33, [78]=667, [100]=800, [121]=710}
+    }
+    tbl = list:new(tbl)
+    for i=0, 130 do
+        local l = tbl[i]
+    end
+end
+
+for i,e in ipairs(tbl.indx) do
+    print("i:"..i..",e:"..e)
+end
+print('start')
+
+n = list:new()
+
+for i=0,100 do
+    n[i] = 6666666666+i
+end
+for i=100,200 do
+    n[i] =77777+i-100
+end
+for i=200,3000 do
+    n[i] = 99999+i-200
+end
+
+print(list.tostring(n))
+print("start:rewrite")
+
+for k=1,3 do
+oldprint("doing k:"..k)
+for i=0,3000 do
+    n[i] = k*3000 +i+k
+end
+end
+
+print = oldprint
+
+oldprint(list.tostring(n))
+list.truncate(n, 0)
+oldprint(list.tostring(n))
+
+oldprint(list.tostring(p))
+list.truncate(p, 70)
+oldprint(list.tostring(p))
+list.truncate(p, 64)
+oldprint(list.tostring(p))
+list.truncate(p, 1)
+oldprint(list.tostring(p))
+
+list.truncate(p, 0)
+oldprint(list.tostring(p))

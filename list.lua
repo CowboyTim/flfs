@@ -60,6 +60,38 @@ function P:new(data)
     return bl
 end
 
+function P:truncate(v)
+    local bl    = rawget(self, '_original')
+    local index = bl.indx
+    local list  = bl.list
+ 
+    -- second: sorted
+    local delete = false
+    local newindex = {}
+    for j=1,#index do
+        local low_bi = index[j]
+        local low_bn = bl[low_bi]
+        local high = low_bi + (list[low_bn] - low_bn)
+        if v >= low_bi and v <= high  then
+            if v == low_bi then
+                list[low_bn] = nil
+                bl[low_bi]   = nil
+            else
+                list[low_bn] = low_bn + (v - low_bi) - 1
+                push(newindex, index[j])
+                delete = true
+            end
+        elseif delete then
+            list[low_bn] = nil
+            bl[low_bi]   = nil
+        else
+            push(newindex, index[j])
+        end
+    end
+    bl.indx = newindex
+    return
+end
+
 function P:match(v)
 
     local index = self.indx
@@ -84,10 +116,11 @@ function P:match(v)
     
     -- second: sorted
     for j=1,#index do
-        local a = index[j]
+        last_index = index[j]
+        last_start_block = self[last_index]
         -- FIXME: implement faster stop in case of non match
-        if v >= a and v <= a + (list[self[a]] - self[a]) then
-            return self[a] + (v - a)
+        if v >= last_index and v <= last_index + (list[last_start_block] - last_start_block) then
+            return last_start_block + (v - last_index)
         end
     end
 
@@ -266,7 +299,11 @@ end
 
 function P:_canonicalize()
     --print("_canonicalize:"..P.tostring({_original = self}))
+    
     local index = self.indx
+    if #index <= 1 then
+        return
+    end
     local list  = self.list
 
     local newindex = {}
