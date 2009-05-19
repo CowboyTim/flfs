@@ -273,7 +273,7 @@ end
 print(list.tostring(n))
 print("start:rewrite")
 
-for k=1,3 do
+for k=1,3000 do
 oldprint("doing k:"..k)
 for i=0,3000 do
     n[i] = k*3000 +i+k
