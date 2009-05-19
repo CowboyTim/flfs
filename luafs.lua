@@ -622,12 +622,6 @@ truncate = function(self, path, size, ctime)
         -- update blockmap
         local lindx = floor(size/BLOCKSIZE)
 
-        -- FIXME: #map is not going to work with list(), nil neither
-        local map   = m.blockmap
-        for i=lindx+1,#map do
-            map[i] = nil
-        end
-
         -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
         -- this init mount()), the block was written allready
         if self then
@@ -677,8 +671,9 @@ rename = function(self, from, to, ctime)
     -- if the target still exists, e.g. when you move a file to another file,
     -- first free the blocks: just add to the filesystem's freelist. For this
     -- we can simply unlink it, just make sure we use the real unlink, not the
-    -- journalled one.
-    if fs_meta[to] then
+    -- journalled one. Of course, we only unlink when it's a file, not in other
+    -- cases. unlink here also maintains the nlink parameter.
+    if fs_meta[to] and fs_meta[to].blockmap then
         luafs._unlink(self, to, ctime)
     end
 
