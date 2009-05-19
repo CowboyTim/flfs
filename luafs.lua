@@ -672,6 +672,15 @@ rename = function(self, from, to, ctime)
 
     -- FUSE handles paths, e.g. a file being moved to a directory: the 'to'
     -- becomes that target directory + "/" + basename(from).
+    --
+
+    -- if the target still exists, e.g. when you move a file to another file,
+    -- first free the blocks: just add to the filesystem's freelist. For this
+    -- we can simply unlink it, just make sure we use the real unlink, not the
+    -- journalled one.
+    if fs_meta[to] then
+        luafs._unlink(self, to, ctime)
+    end
 
     -- rename main node
     fs_meta[to]   = fs_meta[from]
@@ -758,6 +767,10 @@ link = function(self, from, to, ctime)
 end,
 
 unlink = function(self, path, ctime)
+    return luafs._unlink(self, path, ctime)
+end,
+
+_unlink = function(self, path, ctime)
 
     local entity = fs_meta[path]
     entity.nlink = (entity.nlink or 1) - 1
@@ -857,19 +870,6 @@ utimens = function(self, path, atime, mtime)
 end,
 
 access = function(self, path, mode)
---    local p = '/'
---    for dir in string.gmatch(path, "[^/]+") do
---        p = p .. dir
---        print("access():dirpart:"..dir..",p:"..p)
---        if fs_meta[p] then
---            if _bor(fs_meta[p].mode, mode) == 0 then
---                return EPERM
---            end
---        else
---            if _bor(mode, F_OK) then return ENOENT end
---        end
---    end
-
     return 0
 end,
 
