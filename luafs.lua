@@ -622,6 +622,7 @@ truncate = function(self, path, size, ctime)
         -- update blockmap
         local lindx = floor(size/BLOCKSIZE)
 
+        -- FIXME: free the blocks to the filesystem's freelist!
         list.truncate(m.blockmap, lindx + 1)
 
         -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
