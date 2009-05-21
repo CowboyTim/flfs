@@ -162,10 +162,12 @@ inode_start = 1
 block_nr    = 0 
 freelist    = {}
 fs_meta     = {
-    ["/"] = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
+    ["/"]         = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time()),
+    ["/.journal"] = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid, gid, time())
 }
 fs_meta["/"].directorylist = {}
-fs_meta["/"].nlink         = 2
+fs_meta["/"].nlink         = 3
+fs_meta["/.journal"].blockmap = list:new({})
 
 --
 -- FUSE methods (object)
@@ -175,39 +177,41 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --
     -- open that state for further updates, create if it doesn't exist
     --
-    local meta_fh = io.open(self.metafile, "r")
-    if not meta_fh then
-        meta_fh = io.open(self.metafile, "w")
-    else
-        --
-        -- read in the state the filesystem was at umount, this *must* be done
-        -- *before* the update change methods are made a little bit further
-        --
-        -- FIXME: 'self' cannot be used here, find out how, see also
-        --        serializemeta() for more information. Now a record in the
-        --        journal is of the form:
-        --
-        --          luafs.<method>(self, ...)
-        --
-        --        because luafs is a global that can be accessed (while 'self'
-        --        cannot as it is local?!):
-        --
-        --          loadstring(<journalentry>)()
-        --
-        for l in meta_fh:lines() do
-            print("EXEC:"..l)
-            assert(loadstring(l))()
-        end
-        say("done reading metadata from "..self.metafile) 
-    end
-    meta_fh:close()
-    meta_fh = io.open(self.metafile, "a+")
 
-    -- save for further journaling
-    self.meta_fh = meta_fh
+    --
+    -- read in the state the filesystem was at umount, this *must* be done
+    -- *before* the update change methods are made a little bit further
+    --
+    -- FIXME: 'self' cannot be used here, find out how, see also
+    --        serializemeta() for more information. Now a record in the
+    --        journal is of the form:
+    --
+    --          luafs.<method>(self, ...)
+    --
+    --        because luafs is a global that can be accessed (while 'self'
+    --        cannot as it is local?!):
+    --
+    --          loadstring(<journalentry>)()
+    --
+    local i = 0
+    for i=0,floor(fs_meta["/.journal"].size/4096)*4096 do
+        --for l in luafs.read(self, "/.journal", 4096, i*4096) do
+            --print("EXEC:"..l)
+            --assert(loadstring(l))()
+        --end
+    end
+    say("done reading metadata from "..self.metafile) 
 
     -- make the datadir
     lfs.mkdir(self.datadir)
+
+    -- set the correct blockset method
+    local original_write = self["write"]
+    local original_setblock = self["_setblock"]
+    local blocksetmethod = function(self,...)
+        arg[#arg+1] = time()
+        return original_setblock(self,unpack(arg))
+    end
 
     --
     -- loop over all the functions and add a wrapper to write meta data
@@ -233,7 +237,6 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     for k, _ in pairs(change_methods) do
         local fusemethod  = self[k]
         local prefix      = "luafs."..k.."(self,"
-        local meta_fh     = self.meta_fh
         self[k] = function(self,...) 
 
             -- always add the time at the end, methods that change the metastate
@@ -251,15 +254,19 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             end
 
             -- ....and save it to the metafile
-            meta_fh:write(prefix, join(o,","), ")\n")
-            if debug then
-                meta_fh:flush()
-            end
+            local buf = prefix..join(o,",")..")\n"
+            original_write(self, blocksetmethod, "/.journal", buf, fs_meta["/.journal"].size)
 
             -- really call the function
             return fusemethod(self, unpack(arg))
         end
     end
+
+    -- set the write with the journaled _setblock
+    self["write"] = function (self,...)
+        return original_write(self, self["_setblock"], unpack(arg))
+    end
+
 
     -- add the context wrapper
     local context_needing_methods = {
@@ -382,7 +389,7 @@ read = function(self, path, size, offset, obj)
     return 0, join(str)
 end,
 
-write = function(self, path, buf, offset, obj)
+write = function(self, blocksetmethod, path, buf, offset, obj)
 
     -- This call is *NOT* journaled, instead it's _setblock() calls are
 
@@ -453,7 +460,7 @@ write = function(self, path, buf, offset, obj)
     -- adjust the metadata in the journal
     local size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
     for i, _ in pairs(dirty) do
-        self:_setblock(path, i, dirty[i], size)
+        blocksetmethod(self, path, i, dirty[i], size)
     end
 
     return #buf
@@ -523,12 +530,11 @@ _writeblock = function(self, path, blocknr, blockdata)
     --
     local f = self:_getblockstring(blocknr)
 
-    if blocknr % 1000 == 0 then
-        local dir = f[1]
-        for i=2,5 do
-            dir = dir .. "/".. f[i]
-            lfs.mkdir(dir)
-        end
+    local dir = f[1]
+    for i=2,5 do
+        dir = dir .. "/".. f[i]
+        print("dir:"..dir)
+        lfs.mkdir(dir)
     end
 
     local file = join(f, '/')
@@ -884,7 +890,6 @@ fgetattr = function(self, path, obj)
 end,
 
 destroy = function(self, return_value_from_init)
-    self.meta_fh:close()
     self:serializemeta()
     return 0
 end,
@@ -1168,11 +1173,7 @@ if debug then
                 
                 local d = {}
                 for i,v in ipairs(arg) do
-                    if type(v) ~= 'table' then 
-                        d[i] = v 
-                    else
-                        d[i] = tostring(v)
-                    end
+                    d[i] = tostring(v) 
                 end
                 print("function:"..k.."(),args:"..join(d, ","))
 
