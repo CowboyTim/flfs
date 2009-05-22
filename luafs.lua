@@ -46,6 +46,7 @@ push            = table.insert  -- must be global for loadstring()!
 local pop       = table.remove
 local sort      = table.sort
 local format    = string.format
+local split     = string.gmatch
 
 local function shift(t)
     return pop(t,1)
@@ -169,6 +170,8 @@ fs_meta["/.journal"]          = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid,
 fs_meta["/.journal"].blockmap = list:new{}
 fs_meta["/.journal"].freelist = {[0]=block_nr - 1}
 
+last_journal_time = 0
+
 
 --
 -- FUSE methods (object)
@@ -178,6 +181,11 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --
     -- open that state for further updates, create if it doesn't exist
     --
+    --
+    local journal_fh = assert(io.open("/dev/loop7", "r+"))
+    journal_fh:setvbuf("no")
+    self.journal_fh = journal_fh
+
 
     --
     -- read in the state the filesystem was at umount, this *must* be done
@@ -194,27 +202,61 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --
     --          loadstring(<journalentry>)()
     --
-    local _, str = luafs.read(self, "/.journal", 4096, 0)
-    print("init:length:"..string.len(str))
-    if  str == empty_block then
-        print("init:block 0 is empty")
-    end
-    local i = 0
-    while str ~= empty_block do
-        _, str = luafs.read(self, "/.journal", 4096, i*4096)
-        for l in string.gmatch(str, "(.*)\n") do
-            print("EXEC:"..l)
-            assert(loadstring(l))()
+    --
+    say("start reading metadata from "..self.metafile) 
+    local journal_last_block = block_nr
+    local journal_meta = fs_meta["/.journal"]
+    local size = 0
+    local i = 1
+    local str = ''
+    local end_loop = false
+    local nextstr
+    --local buf = {}
+    while i < journal_last_block and not end_loop do
+        print("mainloop")
+        nextstr = journal_fh:read(BLOCKSIZE)
+        str = str..nextstr
+        end_loop = true
+        for l in split(str, "(.-)\n") do
+            if not l or #l == 0 then
+                print("end_loop:true")
+                break
+            end
+            --push(buf, l)
+            size = size + #l + 1
+            print("init:size:"..size..",strlen:"..#str..",l:"..#l)
+            --if #buf > 50000 then
+                --local s = join(buf, "\n")
+                print("EXEC:"..l)
+                local status, err = pcall(loadstring(l))
+                if not status then
+                    print("was error:"..l..",err:"..err)
+                    end_loop = true
+                    break
+                end
+                print("EXEC:DONE")
+                --buf = {}
+            --end
+            print("substr start")
+            str = substr(str, #l + 2)
+            print("substr done:"..#str)
+            end_loop = false
         end
         i = i + 1
     end
+    --local s = join(buf, "\n")
+    --print("EXEC:"..s)
+    --assert(loadstring(s))()
+    --print("EXEC:DONE")
+    --buf = {}
+    journal_meta.size = size 
     say("done reading metadata from "..self.metafile) 
 
     -- make the datadir
     lfs.mkdir(self.datadir)
 
     --
-    -- loop over all the functions and add a wrapper to write meta data
+    -- loop over all the functions and add a wrapper to write meta data`
     --
     local change_methods = {
         rmdir       = true,
@@ -254,7 +296,8 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             end
 
             -- ....and save it to the metafile
-            self:journal_write(prefix..join(o,",")..")\n")
+            local je = "if "..arg[#arg].." >= last_journal_time then "..prefix..join(o,",")..") end\n"
+            luafs.journal_write(self, journal_fh, journal_meta, je)
 
             -- really call the function
             return fusemethod(self, unpack(arg))
@@ -284,9 +327,12 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     return 0
 end,
 
-journal_write = function(self, journal_entry)
-    local journal = fs_meta["/.journal"]
-    return nil
+journal_write = function(self, journal_fh, journal_meta, journal_entry)
+    journal_fh:seek('set', journal_meta.size)
+    journal_fh:write(journal_entry)
+    journal_fh:flush()
+    journal_meta.size = journal_meta.size + #journal_entry 
+    return 
 end,
 
 rmdir = function(self, path, ctime)
@@ -892,6 +938,7 @@ fgetattr = function(self, path, obj)
 end,
 
 destroy = function(self, return_value_from_init)
+    self.journal_fh:close()
     self:serializemeta()
     return 0
 end,
@@ -1162,10 +1209,15 @@ for i,w in ipairs(options) do
         debug = 1
     end
 end
-say = print
+oldprint = print
+function say(...)
+    return oldprint(time(), unpack(arg))
+end
 if debug == 0 then 
     function print() end
 end
+
+say("start")
 
 -- debug?
 if debug then
