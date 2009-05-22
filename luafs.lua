@@ -159,15 +159,15 @@ local empty_block = join(t)
 -- globally to go over the journal easy
 --
 inode_start = 1
-block_nr    = STRIDE 
+block_nr    = STRIDE * 4 * 1024 
 freelist    = {}
 fs_meta     = {}
 fs_meta["/"]               = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 fs_meta["/"].directorylist = {}
 fs_meta["/"].nlink         = 3
 fs_meta["/.journal"]          = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid, gid, time())
-fs_meta["/.journal"].blockmap = list:new{map={[0]=0},list={[0]=0}}
-fs_meta["/.journal"].freelist = {[1]=63}
+fs_meta["/.journal"].blockmap = list:new{}
+fs_meta["/.journal"].freelist = {[0]=block_nr - 1}
 
 
 --
@@ -198,9 +198,6 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     print("init:length:"..string.len(str))
     if  str == empty_block then
         print("init:block 0 is empty")
-        -- fs not yet initialized
-        fs_meta["/.journal"].blockmap = list:new{}
-        fs_meta["/.journal"].freelist = {[0]=63}
     end
     local i = 0
     while str ~= empty_block do
@@ -215,14 +212,6 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
 
     -- make the datadir
     lfs.mkdir(self.datadir)
-
-    -- set the correct blockset method
-    local original_write = self["write"]
-    local original_setblock = self["_setblock"]
-    local blocksetmethod = function(self,...)
-        arg[#arg+1] = time()
-        return original_setblock(self,unpack(arg))
-    end
 
     --
     -- loop over all the functions and add a wrapper to write meta data
@@ -265,19 +254,12 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             end
 
             -- ....and save it to the metafile
-            local buf = prefix..join(o,",")..")\n"
-            original_write(self, blocksetmethod, "/.journal", buf, fs_meta["/.journal"].size)
+            luafs.journal_write(self, prefix..join(o,",")..")\n")
 
             -- really call the function
             return fusemethod(self, unpack(arg))
         end
     end
-
-    -- set the write with the journaled _setblock
-    self["write"] = function (self,...)
-        return original_write(self, self["_setblock"], unpack(arg))
-    end
-
 
     -- add the context wrapper
     local context_needing_methods = {
@@ -300,6 +282,11 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     end
 
     return 0
+end,
+
+journal_write = function(self, journal_entry)
+    local journal = fs_meta["/.journal"]
+    return
 end,
 
 rmdir = function(self, path, ctime)
