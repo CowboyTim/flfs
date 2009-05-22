@@ -159,15 +159,16 @@ local empty_block = join(t)
 -- globally to go over the journal easy
 --
 inode_start = 1
-block_nr    = 0 
+block_nr    = STRIDE 
 freelist    = {}
-fs_meta     = {
-    ["/"]         = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time()),
-    ["/.journal"] = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid, gid, time())
-}
+fs_meta     = {}
+fs_meta["/"]               = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 fs_meta["/"].directorylist = {}
 fs_meta["/"].nlink         = 3
-fs_meta["/.journal"].blockmap = list:new({})
+fs_meta["/.journal"]          = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid, gid, time())
+fs_meta["/.journal"].blockmap = list:new{map={[0]=0},list={[0]=0}}
+fs_meta["/.journal"].freelist = {[1]=63}
+
 
 --
 -- FUSE methods (object)
@@ -193,12 +194,22 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --
     --          loadstring(<journalentry>)()
     --
+    local _, str = luafs.read(self, "/.journal", 4096, 0)
+    print("init:length:"..string.len(str))
+    if  str == empty_block then
+        print("init:block 0 is empty")
+        -- fs not yet initialized
+        fs_meta["/.journal"].blockmap = list:new{}
+        fs_meta["/.journal"].freelist = {[0]=63}
+    end
     local i = 0
-    for i=0,floor(fs_meta["/.journal"].size/4096)*4096 do
-        --for l in luafs.read(self, "/.journal", 4096, i*4096) do
-            --print("EXEC:"..l)
-            --assert(loadstring(l))()
-        --end
+    while str ~= empty_block do
+        _, str = luafs.read(self, "/.journal", 4096, i*4096)
+        for l in string.gmatch(str, "(.*)\n") do
+            print("EXEC:"..l)
+            assert(loadstring(l))()
+        end
+        i = i + 1
     end
     say("done reading metadata from "..self.metafile) 
 
@@ -376,7 +387,7 @@ read = function(self, path, size, offset, obj)
     local data   = {}
     local map   = entity.blockmap
     local findx = floor(offset/BLOCKSIZE)
-    local lindx = floor((offset + size)/BLOCKSIZE)
+    local lindx = floor((offset + size)/BLOCKSIZE) - 1
     if findx == lindx then
         local b = self:_getblock(data, findx, map[findx]) 
         return 0, substr(b,offset % BLOCKSIZE,offset%BLOCKSIZE+size)
@@ -584,6 +595,10 @@ _getblock = function(self, data, i, blocknr)
 
         print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>')..",file:"..file)
         fh = io.open(file, 'r')
+        if not fh then
+            return empty_block
+        end
+
         local a = fh:read(BLOCKSIZE)
         fh:close()
 
