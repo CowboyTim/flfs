@@ -559,33 +559,34 @@ _freesingleblock = function (self, b, meta)
     return
 end,
 
-_getblockstring = function(self, i)
-    local f = { self.datadir }
-    for d in string.gmatch(format('%015d', i), '(%d%d%d)') do
-        push(f, d)
-    end
-    return f
-end,
+--_getblockstring = function(self, i)
+--    local f = { self.datadir }
+--    for d in string.gmatch(format('%015d', i), '(%d%d%d)') do
+--        push(f, d)
+--    end
+--    return f
+--end,
 
 _writeblock = function(self, path, blocknr, blockdata)
 
     -- this is an actual write of the data to disk. This does not change the
     -- meta journal, that is done seperately, and at the end
     --
-    local f = self:_getblockstring(blocknr)
-
-    local dir = f[1]
-    for i=2,5 do
-        dir = dir .. "/".. f[i]
-        print("dir:"..dir)
-        lfs.mkdir(dir)
-    end
-
-    local file = join(f, '/')
-    print("_writeblock():"..file)
-    fh = assert(io.open(file, 'w'))
-    fh:write(blockdata)
-    fh:close()
+--    local f = self:_getblockstring(blocknr)
+--
+--    local dir = f[1]
+--    for i=2,5 do
+--        dir = dir .. "/".. f[i]
+--        print("dir:"..dir)
+--        lfs.mkdir(dir)
+--    end
+--
+--    local file = join(f, '/')
+--    print("_writeblock():"..file)
+    local journal_fh = self.journal_fh
+    assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
+    assert(journal_fh:write(blockdata))
+    assert(journal_fh:flush())
 end,
 
 _setblock = function(self, path, i, bnr, size, ctime)
@@ -624,16 +625,20 @@ end,
 _getblock = function(self, data, i, blocknr)
 
     if not data[i] and blocknr ~= nil then
-        local file = join(self:_getblockstring(blocknr), '/')
+        local journal_fh = self.journal_fh
+        assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
+        local a = assert(journal_fh:read(BLOCKSIZE))
 
-        print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>')..",file:"..file)
-        fh = io.open(file, 'r')
-        if not fh then
-            return empty_block
-        end
-
-        local a = fh:read(BLOCKSIZE)
-        fh:close()
+--        local file = join(self:_getblockstring(blocknr), '/')
+--
+--        print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>')..",file:"..file)
+--        fh = io.open(file, 'r')
+--        if not fh then
+--            return empty_block
+--        end
+--
+--        local a = fh:read(BLOCKSIZE)
+--        fh:close()
 
         print("_getblock|return:"..#a)
         if a and #a then
