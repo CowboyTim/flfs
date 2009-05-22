@@ -254,7 +254,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             end
 
             -- ....and save it to the metafile
-            luafs.journal_write(self, prefix..join(o,",")..")\n")
+            self:journal_write(prefix..join(o,",")..")\n")
 
             -- really call the function
             return fusemethod(self, unpack(arg))
@@ -286,7 +286,7 @@ end,
 
 journal_write = function(self, journal_entry)
     local journal = fs_meta["/.journal"]
-    return
+    return nil
 end,
 
 rmdir = function(self, path, ctime)
@@ -387,7 +387,7 @@ read = function(self, path, size, offset, obj)
     return 0, join(str)
 end,
 
-write = function(self, blocksetmethod, path, buf, offset, obj)
+write = function(self, path, buf, offset, obj)
 
     -- This call is *NOT* journaled, instead it's _setblock() calls are
 
@@ -458,7 +458,7 @@ write = function(self, blocksetmethod, path, buf, offset, obj)
     -- adjust the metadata in the journal
     local size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
     for i, _ in pairs(dirty) do
-        blocksetmethod(self, path, i, dirty[i], size)
+        self:_setblock(path, i, dirty[i], size)
     end
 
     return #buf
