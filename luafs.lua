@@ -1,8 +1,9 @@
 #!/usr/bin/env lua
 
 local fuse = require 'fuse'
+local lfs  = require "lfs"
 
-list = require 'list'
+list = require 'list'        -- must be global for loadstring()!
 
 local S_WID     = 1 --world
 local S_GID     = 2^3 --group
@@ -42,17 +43,19 @@ local substr    = string.sub
 local floor     = math.floor
 local time      = os.time
 local join      = table.concat
+local push      = table.insert
 push            = table.insert  -- must be global for loadstring()!
 local pop       = table.remove
 local sort      = table.sort
 local format    = string.format
 local split     = string.gmatch
+local match     = string.match
 
 local function shift(t)
     return pop(t,1)
 end
 
-function pairsByKeys(t, f)
+local function pairsByKeys(t, f)
     local a = {}
     for n in pairs(t) do 
         push(a, n) 
@@ -73,23 +76,22 @@ end
 -- Helper functions
 --
 local tab = {  -- tab[i+1][j+1] = xor(i, j) where i,j in (0-15)
-  {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, },
-  {1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14, },
-
-  {2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, },
-  {3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12, },
-  {4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, },
-  {5, 4, 7, 6, 1, 0, 3, 2, 13, 12, 15, 14, 9, 8, 11, 10, },
-  {6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, },
-  {7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, },
-  {8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, },
-  {9, 8, 11, 10, 13, 12, 15, 14, 1, 0, 3, 2, 5, 4, 7, 6, },
-  {10, 11, 8, 9, 14, 15, 12, 13, 2, 3, 0, 1, 6, 7, 4, 5, },
-  {11, 10, 9, 8, 15, 14, 13, 12, 3, 2, 1, 0, 7, 6, 5, 4, },
-  {12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3, },
-  {13, 12, 15, 14, 9, 8, 11, 10, 5, 4, 7, 6, 1, 0, 3, 2, },
-  {14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1, },
-  {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, },
+  {0  , 1  , 2  , 3  , 4  , 5  , 6  , 7  , 8  , 9  , 10 , 11 , 12 , 13 , 14 , 15 , } , 
+  {1  , 0  , 3  , 2  , 5  , 4  , 7  , 6  , 9  , 8  , 11 , 10 , 13 , 12 , 15 , 14 , } , 
+  {2  , 3  , 0  , 1  , 6  , 7  , 4  , 5  , 10 , 11 , 8  , 9  , 14 , 15 , 12 , 13 , } , 
+  {3  , 2  , 1  , 0  , 7  , 6  , 5  , 4  , 11 , 10 , 9  , 8  , 15 , 14 , 13 , 12 , } , 
+  {4  , 5  , 6  , 7  , 0  , 1  , 2  , 3  , 12 , 13 , 14 , 15 , 8  , 9  , 10 , 11 , } , 
+  {5  , 4  , 7  , 6  , 1  , 0  , 3  , 2  , 13 , 12 , 15 , 14 , 9  , 8  , 11 , 10 , } , 
+  {6  , 7  , 4  , 5  , 2  , 3  , 0  , 1  , 14 , 15 , 12 , 13 , 10 , 11 , 8  , 9  , } , 
+  {7  , 6  , 5  , 4  , 3  , 2  , 1  , 0  , 15 , 14 , 13 , 12 , 11 , 10 , 9  , 8  , } , 
+  {8  , 9  , 10 , 11 , 12 , 13 , 14 , 15 , 0  , 1  , 2  , 3  , 4  , 5  , 6  , 7  , } , 
+  {9  , 8  , 11 , 10 , 13 , 12 , 15 , 14 , 1  , 0  , 3  , 2  , 5  , 4  , 7  , 6  , } , 
+  {10 , 11 , 8  , 9  , 14 , 15 , 12 , 13 , 2  , 3  , 0  , 1  , 6  , 7  , 4  , 5  , } , 
+  {11 , 10 , 9  , 8  , 15 , 14 , 13 , 12 , 3  , 2  , 1  , 0  , 7  , 6  , 5  , 4  , } , 
+  {12 , 13 , 14 , 15 , 8  , 9  , 10 , 11 , 4  , 5  , 6  , 7  , 0  , 1  , 2  , 3  , } , 
+  {13 , 12 , 15 , 14 , 9  , 8  , 11 , 10 , 5  , 4  , 7  , 6  , 1  , 0  , 3  , 2  , } , 
+  {14 , 15 , 12 , 13 , 10 , 11 , 8  , 9  , 6  , 7  , 4  , 5  , 2  , 3  , 0  , 1  , } , 
+  {15 , 14 , 13 , 12 , 11 , 10 , 9  , 8  , 7  , 6  , 5  , 4  , 3  , 2  , 1  , 0  , } , 
 }
 
 local function _bxor(a,b)
@@ -106,19 +108,16 @@ local function _bxor(a,b)
 end
 
 
-local function _bnot(a) return MAXINT - a end
-
+local function _bnot(a)   return MAXINT - a end
 local function _band(a,b) return ((a+b) - _bxor(a,b))/2 end
-
-local function _bor(a,b) return MAXINT - _band(MAXINT - a, MAXINT - b) end
-
+local function _bor(a,b)  return MAXINT - _band(MAXINT - a, MAXINT - b) end
 local function set_bits(mode, bits)
     return _bor(mode, bits)
 end
 
-function string:splitpath() 
-    local dir,file = self:match("(.-)([^/\\]*)$") 
-    dir = dir:match("(.-)[/\\]?$")
+local function splitpath(string) 
+    local dir,file = match(string, "(.-)([^/\\]*)$") 
+    dir = match(dir, "(.-)[/\\]?$")
     if dir == '' then
         dir = "/"
     end
@@ -172,20 +171,22 @@ fs_meta["/.journal"].freelist = {[0]=block_nr - 1}
 
 last_journal_time = 0
 
+local journal_fh
+
 
 --
 -- FUSE methods (object)
 --
 luafs = {
 init = function(self, proto_major, proto_minor, async_read, max_write, max_readahead)
-    --
-    -- open that state for further updates, create if it doesn't exist
-    --
-    --
-    local journal_fh = assert(io.open("/dev/loop7", "r+"))
-    journal_fh:setvbuf("no")
-    self.journal_fh = journal_fh
 
+    -- open the blockdevice
+    journal_fh = assert(io.open(self.metadev, "r+"))
+    journal_fh:setvbuf("no")
+
+    -- find the size of it
+    local blockdev_size = journal_fh:seek("end",0)
+    say("blockdev "..self.metadev.." size:"..blockdev_size)
 
     --
     -- read in the state the filesystem was at umount, this *must* be done
@@ -203,9 +204,9 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --          loadstring(<journalentry>)()
     --
     --
-    say("start reading metadata from "..self.metafile) 
+    say("start reading metadata from "..self.metadev) 
+    journal_fh:seek("set",0)
     local journal_last_block = block_nr
-    local journal_meta = fs_meta["/.journal"]
     local size = 0
     local i = 1
     local str = ''
@@ -249,11 +250,9 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --assert(loadstring(s))()
     --print("EXEC:DONE")
     --buf = {}
+    local journal_meta = fs_meta["/.journal"]
     journal_meta.size = size 
-    say("done reading metadata from "..self.metafile) 
-
-    -- make the datadir
-    lfs.mkdir(self.datadir)
+    say("done reading metadata from "..self.metadev) 
 
     --
     -- loop over all the functions and add a wrapper to write meta data`
@@ -297,7 +296,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
 
             -- ....and save it to the metafile
             local je = "if "..arg[#arg].." >= last_journal_time then "..prefix..join(o,",")..") end\n"
-            luafs.journal_write(self, journal_fh, journal_meta, je)
+            luafs.journal_write(self, journal_meta, je)
 
             -- really call the function
             return fusemethod(self, unpack(arg))
@@ -327,7 +326,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     return 0
 end,
 
-journal_write = function(self, journal_fh, journal_meta, journal_entry)
+journal_write = function(self, journal_meta, journal_entry)
     journal_fh:seek('set', journal_meta.size)
     journal_fh:write(journal_entry)
     journal_fh:flush()
@@ -340,7 +339,7 @@ rmdir = function(self, path, ctime)
         return EEXIST 
     end
 
-    local parent,dir = path:splitpath()
+    local parent,dir = splitpath(path)
     fs_meta[parent].nlink = fs_meta[parent].nlink - 1
     fs_meta[parent].directorylist[dir] = nil
     fs_meta[parent].ctime = ctime
@@ -353,7 +352,7 @@ mkdir = function(self, path, mode, cuid, cgid, ctime)
     if #path > 1024 then
         return ENAMETOOLONG
     end
-    local parent,subdir = path:splitpath()
+    local parent,subdir = splitpath(path)
     print("parentdir:"..parent)
     fs_meta[path] = new_meta(mode + S_IFDIR, cuid, cgid, ctime)
     fs_meta[path].directorylist = {}
@@ -402,7 +401,7 @@ open = function(self, path, mode)
 end,
 
 create = function(self, path, mode, flags, cuid, cgid, ctime)
-    local parent,file = path:splitpath()
+    local parent,file = splitpath(path)
     print("parent:"..parent..",file:"..file)
     if mode == 32768 then
         mode = mk_mode(6,4,4)
@@ -559,31 +558,11 @@ _freesingleblock = function (self, b, meta)
     return
 end,
 
---_getblockstring = function(self, i)
---    local f = { self.datadir }
---    for d in string.gmatch(format('%015d', i), '(%d%d%d)') do
---        push(f, d)
---    end
---    return f
---end,
-
 _writeblock = function(self, path, blocknr, blockdata)
 
     -- this is an actual write of the data to disk. This does not change the
     -- meta journal, that is done seperately, and at the end
     --
---    local f = self:_getblockstring(blocknr)
---
---    local dir = f[1]
---    for i=2,5 do
---        dir = dir .. "/".. f[i]
---        print("dir:"..dir)
---        lfs.mkdir(dir)
---    end
---
---    local file = join(f, '/')
---    print("_writeblock():"..file)
-    local journal_fh = self.journal_fh
     assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
     assert(journal_fh:write(blockdata))
     assert(journal_fh:flush())
@@ -625,21 +604,8 @@ end,
 _getblock = function(self, data, i, blocknr)
 
     if not data[i] and blocknr ~= nil then
-        local journal_fh = self.journal_fh
         assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
         local a = assert(journal_fh:read(BLOCKSIZE))
-
---        local file = join(self:_getblockstring(blocknr), '/')
---
---        print("_getblock|readblock:i:"..i..",blocknr:"..(blocknr or '<nil>')..",file:"..file)
---        fh = io.open(file, 'r')
---        if not fh then
---            return empty_block
---        end
---
---        local a = fh:read(BLOCKSIZE)
---        fh:close()
-
         print("_getblock|return:"..#a)
         if a and #a then
             data[i] = a
@@ -747,14 +713,14 @@ rename = function(self, from, to, ctime)
     local p,e
 
     -- 'to'
-    p, e = to:splitpath()
+    p, e = splitpath(to)
     fs_meta[p].directorylist[e] = fs_meta[to]
     fs_meta[p].nlink = fs_meta[p].nlink + 1
     fs_meta[p].ctime = ctime
     fs_meta[p].mtime = ctime
 
     -- 'from'
-    p,e = from:splitpath()
+    p,e = splitpath(from)
     fs_meta[p].directorylist[e] = nil
     fs_meta[p].nlink = fs_meta[p].nlink - 1
     fs_meta[p].ctime = ctime
@@ -783,7 +749,7 @@ end,
 symlink = function(self, from, to, cuid, cgid, ctime)
     -- 'from' isn't used,.. that can be even from a seperate filesystem, e.g.
     -- when someone makes a symlink on this filesystem...
-    local parent,file = to:splitpath()
+    local parent,file = splitpath(to)
     fs_meta[to] = new_meta(mk_mode(7,7,7) + S_IFLNK, cuid, cgid, ctime)
     fs_meta[to].target = from
     fs_meta[parent].directorylist[file] = fs_meta[to]
@@ -812,7 +778,7 @@ link = function(self, from, to, ctime)
         fs_meta[to]  = fs_meta[from]
 
         -- update the TO parent: add entry + change meta
-        local toparent,e = to:splitpath()
+        local toparent,e = splitpath(to)
         fs_meta[toparent].directorylist[e] = fs_meta[to]
         fs_meta[toparent].ctime = ctime
         fs_meta[toparent].mtime = ctime
@@ -833,7 +799,7 @@ _unlink = function(self, path, ctime)
     entity.nlink = (entity.nlink or 1) - 1
     entity.ctime = ctime
 
-    local p,e = path:splitpath()
+    local p,e = splitpath(path)
     fs_meta[p].directorylist[e] = nil
     fs_meta[p].ctime = ctime
     fs_meta[p].mtime = ctime
@@ -860,7 +826,7 @@ mknod = function(self, path, mode, rdev, cuid, cgid, ctime)
     fs_meta[path]         = new_meta(mode, cuid, cgid, ctime)
     fs_meta[path].dev     = rdev
 
-    local parent,file = path:splitpath()
+    local parent,file = splitpath(path)
     fs_meta[parent].directorylist[file] = fs_meta[path]
     fs_meta[parent].ctime = ctime
     fs_meta[parent].mtime = ctime
@@ -943,7 +909,7 @@ fgetattr = function(self, path, obj)
 end,
 
 destroy = function(self, return_value_from_init)
-    self.journal_fh:close()
+    journal_fh:close()
     self:serializemeta()
     return 0
 end,
@@ -958,7 +924,7 @@ getattr = function(self, path)
     end
 
     -- FIXME: All ENAMETOOLONG needs to implemented better (and correct)
-    local dir,file = path:splitpath()
+    local dir,file = splitpath(path)
     if #file > 255 then
         return ENAMETOOLONG
     end
@@ -1152,8 +1118,8 @@ serializemeta = function(self)
     return 0
 end,
 
+metadev  = "/dev/loop7",
 metafile = "/home/tim/tmp/fs/test.lua",
-datadir  = "/home/tim/tmp/fs/luafs-data",
 size     = 1 * 1024 * 1024 * 1024
 
 }
@@ -1190,7 +1156,6 @@ for i,w in ipairs(fuse_options) do
 end
 
 -- check the mountpoint
-require "lfs"
 local here = lfs.currentdir()
 if not lfs.chdir(options[2]) then
     print("mountpoint "..options[2].." does not exist")
