@@ -158,16 +158,21 @@ local empty_block = join(t)
 -- fs_meta, inode_start and block_nr are the global variables that are needed
 -- globally to go over the journal easy
 --
-inode_start = 1
-block_nr    = STRIDE * 4 * 1024 
-freelist    = {}
-fs_meta     = {}
+--
+-- FIXME: implement correct journal size'ing
+block_nr     = 1 * 1024 * 1024 * 1024 / BLOCKSIZE
+inode_start  = 1
+max_block_nr = 0
+fs_meta      = {}
 fs_meta["/"]               = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 fs_meta["/"].directorylist = {}
 fs_meta["/"].nlink         = 3
 fs_meta["/.journal"]          = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid, gid, time())
 fs_meta["/.journal"].blockmap = list:new{}
 fs_meta["/.journal"].freelist = {[0]=block_nr - 1}
+
+freelist       = {}
+freelist_index = {}
 
 last_journal_time = 0
 
@@ -186,7 +191,9 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
 
     -- find the size of it
     local blockdev_size = journal_fh:seek("end",0)
-    say("blockdev "..self.metadev.." size:"..blockdev_size)
+    max_block_nr = floor(blockdev_size / BLOCKSIZE) - 64
+    say("blockdev "..self.metadev.." size:"..blockdev_size..",start block:"..block_nr..",max block:"..max_block_nr)
+    
 
     --
     -- read in the state the filesystem was at umount, this *must* be done
@@ -514,21 +521,26 @@ _getnextfreeblocknr = function (self, meta)
     local bfree = meta.freelist
     local nextfreeblock = next(bfree)
     if not nextfreeblock then 
-        next_free_stride = next(freelist)
-        if next_free_stride ~= nil then
+        if #freelist_index > 0 then
+            next_free_stride = freelist_index[1]
             print('_getnextfreeblocknr:'..next_free_stride..
                   ',size:'..freelist[next_free_stride])
             if freelist[next_free_stride] - next_free_stride > STRIDE then
-                freelist[next_free_stride] = freelist[next_free_stride] - STRIDE
-                next_free_stride = freelist[next_free_stride] + 1
+                freelist[next_free_stride + STRIDE] = freelist[next_free_stride]
+                freelist_index[1] = next_free_stride + STRIDE
             else 
                 print('_getnextfreeblocknr:setting to nil:'..next_free_stride)
-                freelist[next_free_stride] = nil
+                shift(freelist_index)
             end
+            freelist[next_free_stride] = nil
         else
             -- watermark shift
             next_free_stride = block_nr
             block_nr = block_nr + STRIDE
+            if block_nr >= max_block_nr then
+                block_nr = block_nr - STRIDE
+                error({code=1, message="Disk Full"})
+            end
         end
         nextfreeblock = next_free_stride
         bfree[nextfreeblock + 1] = nextfreeblock + STRIDE - 1
@@ -549,7 +561,10 @@ _addtofreelist = function (self, blocklist)
         b = STRIDE * floor(b/STRIDE) + STRIDE - 1
         print("_addtofreelist:i:"..i..",b:"..b)
         freelist[i] = b
+        push(freelist_index, i)
     end
+    -- FIXME: bad idea, implement a better one
+    sort(freelist_index)
     return
 end,
 
@@ -986,7 +1001,7 @@ getxattr = function(self, path, name, size)
 end,
 
 statfs = function(self, path)
-    local nr_of_blocks      = floor(self.size/BLOCKSIZE)
+    local nr_of_blocks      = max_block_nr
     local nr_of_free_blocks = nr_of_blocks - (block_nr + 1) + #freelist
     return 
         0,
@@ -999,16 +1014,19 @@ statfs = function(self, path)
 end,
 
 _canonicalize_freelist = function(self)
+    freelist_index = {}
     local last
     for i,v in pairsByKeys(freelist) do
         if not last then
             last = i
+            push(freelist_index, last)
         else
             if i == freelist[last] + 1 then
                 freelist[last] = freelist[i]
                 freelist[i]    = nil
             else
                 last = i
+                push(freelist_index, last)
             end
         end
     end
@@ -1034,6 +1052,7 @@ serializemeta = function(self)
         push(fl, '['..i..']='..v)
     end
     new_meta_fh:write('freelist = {', join(fl, ','), '}\n')
+    new_meta_fh:write('freelist_index = {', join(freelist_index, ','), '}\n')
 
     -- loop over all filesystem entries
     for k,e in pairs(fs_meta) do
@@ -1120,7 +1139,6 @@ end,
 
 metadev  = "/dev/loop7",
 metafile = "/home/tim/tmp/fs/test.lua",
-size     = 1 * 1024 * 1024 * 1024
 
 }
 
