@@ -191,7 +191,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
 
     -- find the size of it
     local blockdev_size = journal_fh:seek("end",0)
-    max_block_nr = floor(blockdev_size / BLOCKSIZE) - 64
+    max_block_nr = floor(blockdev_size / BLOCKSIZE) - STRIDE
     say("blockdev "..self.metadev.." size:"..blockdev_size..",start block:"..block_nr..",max block:"..max_block_nr)
     
 
