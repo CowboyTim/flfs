@@ -173,6 +173,7 @@ fs_meta["/.journal"].freelist = {[0]=block_nr - 1}
 
 freelist       = {}
 freelist_index = {}
+blocks_in_freelist = 0
 
 last_journal_time = 0
 
@@ -533,6 +534,7 @@ _getnextfreeblocknr = function (self, meta)
                 shift(freelist_index)
             end
             freelist[next_free_stride] = nil
+            blocks_in_freelist = blocks_in_freelist - STRIDE
         else
             -- watermark shift
             next_free_stride = block_nr
@@ -561,10 +563,11 @@ _addtofreelist = function (self, blocklist)
         b = STRIDE * floor(b/STRIDE) + STRIDE - 1
         print("_addtofreelist:i:"..i..",b:"..b)
         freelist[i] = b
+        blocks_in_freelist = blocks_in_freelist + b - i + 1
         push(freelist_index, i)
     end
     -- FIXME: bad idea, implement a better one
-    sort(freelist_index)
+    self:_canonicalize_freelist()
     return
 end,
 
@@ -1001,12 +1004,11 @@ getxattr = function(self, path, name, size)
 end,
 
 statfs = function(self, path)
-    local nr_of_blocks      = max_block_nr
-    local nr_of_free_blocks = nr_of_blocks - (block_nr + 1) + #freelist
+    local nr_of_free_blocks = max_block_nr - (block_nr + 1) + blocks_in_freelist
     return 
         0,
         BLOCKSIZE, 
-        nr_of_blocks, 
+        max_block_nr, 
         nr_of_free_blocks, 
         nr_of_free_blocks, 
         inode_start,
@@ -1043,7 +1045,8 @@ serializemeta = function(self)
 
     -- write the main globals first
     local new_meta_fh = io.open(self.metafile..'.new', 'w')
-    new_meta_fh:write('block_nr,inode_start='..block_nr..','..inode_start..'\n')
+    new_meta_fh:write('block_nr,inode_start,blocks_in_freelist='
+                      ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
 
     -- write the freelist
     self:_canonicalize_freelist()
