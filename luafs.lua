@@ -33,7 +33,7 @@ local ENOATTR      = -516
 local ENOTSUPP     = -524
 
 local BLOCKSIZE    = 4096
-local STRIDE       = 64
+local STRIDE       = 2
 local MAXINT       = 2^32 -1
 
 --
@@ -50,6 +50,7 @@ local sort      = table.sort
 local format    = string.format
 local split     = string.gmatch
 local match     = string.match
+local find      = string.find
 
 local function shift(t)
     return pop(t,1)
@@ -175,8 +176,6 @@ freelist       = {}
 freelist_index = {}
 blocks_in_freelist = 0
 
-last_journal_time = 0
-
 local journal_fh
 
 
@@ -214,52 +213,51 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --
     say("start reading metadata from "..self.metadev) 
     journal_fh:seek("set",0)
-    local journal_last_block = block_nr
-    local size = 0
-    local i = 1
-    local str = ''
-    local end_loop = false
-    local nextstr
-    --local buf = {}
-    while i < journal_last_block and not end_loop do
-        print("mainloop")
-        nextstr = journal_fh:read(BLOCKSIZE)
-        str = str..nextstr
-        end_loop = true
-        for l in split(str, "(.-)\n") do
-            if not l or #l == 0 then
-                print("end_loop:true")
-                break
-            end
-            --push(buf, l)
-            size = size + #l + 1
-            print("init:size:"..size..",strlen:"..#str..",l:"..#l)
-            --if #buf > 50000 then
-                --local s = join(buf, "\n")
-                print("EXEC:"..l)
-                local status, err = pcall(loadstring(l))
-                if not status then
-                    print("was error:"..l..",err:"..err)
-                    end_loop = true
-                    break
-                end
-                print("EXEC:DONE")
-                --buf = {}
-            --end
-            print("substr start")
-            str = substr(str, #l + 2)
-            print("substr done:"..#str)
-            end_loop = false
+
+    local journal_size = 0
+    local journal_str  = ''
+    local start_done   = false
+
+    local journal_f,err=load(function()
+        if not start_done then
+            start_done = true
+            return "local a\n"
         end
-        i = i + 1
+        local nstr = journal_fh:read(BLOCKSIZE)
+        -- first char of the next block is null, thus it is the end of
+        -- the journal/state, so we end the loop
+        while nstr and substr(nstr,1,1) ~= '\000' do
+            journal_str = journal_str..nstr
+            local last_i
+            local i = find(journal_str, "\n", 1, true)
+            while i do
+                last_i = i
+                i = find(journal_str, "\n", i+1, true)
+            end 
+            if last_i then
+                print("last_i:"..last_i)
+                local l = substr(journal_str, 0, last_i)
+                journal_size = journal_size + #l
+                print(l)
+                journal_str = substr(journal_str, #l + 1)
+                print("return, len:"..#journal_str)
+                return "a=function() "..l.." end\na()\n"
+            end
+            nstr = journal_fh:read(BLOCKSIZE)
+            print("len:"..#str)
+        end
+        return nil
+    end)
+    if not journal_f then
+        error(err)
     end
-    --local s = join(buf, "\n")
-    --print("EXEC:"..s)
-    --assert(loadstring(s))()
-    --print("EXEC:DONE")
-    --buf = {}
+    local status, err = pcall(journal_f)
+    if not status then
+        print("was error:"..err)
+        error(err)
+    end
     local journal_meta = fs_meta["/.journal"]
-    journal_meta.size = size 
+    journal_meta.size = journal_size 
     say("done reading metadata from "..self.metadev) 
 
     --
@@ -303,7 +301,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             end
 
             -- ....and save it to the metafile
-            local je = "if "..arg[#arg].." >= last_journal_time then "..prefix..join(o,",")..") end\n"
+            local je = prefix..join(o,",")..")\n"
             luafs.journal_write(self, journal_meta, je)
 
             -- really call the function
@@ -335,10 +333,17 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
 end,
 
 journal_write = function(self, journal_meta, journal_entry)
-    journal_fh:seek('set', journal_meta.size)
+    local current_js = journal_meta.size
+    local next_bi    = floor((current_js+#journal_entry)/BLOCKSIZE)
+    if js == 0 or next_bi ~= floor(current_js/BLOCKSIZE) then
+        journal_fh:seek('set', BLOCKSIZE * next_bi)
+        journal_fh:write(empty_block, empty_block)
+        journal_fh:flush()
+    end
+    journal_fh:seek('set', current_js)
     journal_fh:write(journal_entry)
     journal_fh:flush()
-    journal_meta.size = journal_meta.size + #journal_entry 
+    journal_meta.size = current_js + #journal_entry 
     return 
 end,
 
@@ -567,7 +572,7 @@ _addtofreelist = function (self, blocklist)
         push(freelist_index, i)
     end
     -- FIXME: bad idea, implement a better one
-    self:_canonicalize_freelist()
+    luafs._canonicalize_freelist(self)
     return
 end,
 
