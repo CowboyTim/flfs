@@ -244,7 +244,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
                 return "a=function() "..l.." end\na()\n"
             end
             nstr = journal_fh:read(BLOCKSIZE)
-            print("len:"..#str)
+            print("len:"..#journal_str)
         end
         return nil
     end)
@@ -1140,6 +1140,7 @@ serializemeta = function(self)
             end
         end
     end
+    new_meta_fh:write(empty_block, empty_block)
     new_meta_fh:close()
 
     return 0
