@@ -73,39 +73,26 @@ local function pairsByKeys(t, f)
 end
 
 
---
--- Helper functions
---
-local tab = {  -- tab[i+1][j+1] = xor(i, j) where i,j in (0-15)
-  {0  , 1  , 2  , 3  , 4  , 5  , 6  , 7  , 8  , 9  , 10 , 11 , 12 , 13 , 14 , 15 , } , 
-  {1  , 0  , 3  , 2  , 5  , 4  , 7  , 6  , 9  , 8  , 11 , 10 , 13 , 12 , 15 , 14 , } , 
-  {2  , 3  , 0  , 1  , 6  , 7  , 4  , 5  , 10 , 11 , 8  , 9  , 14 , 15 , 12 , 13 , } , 
-  {3  , 2  , 1  , 0  , 7  , 6  , 5  , 4  , 11 , 10 , 9  , 8  , 15 , 14 , 13 , 12 , } , 
-  {4  , 5  , 6  , 7  , 0  , 1  , 2  , 3  , 12 , 13 , 14 , 15 , 8  , 9  , 10 , 11 , } , 
-  {5  , 4  , 7  , 6  , 1  , 0  , 3  , 2  , 13 , 12 , 15 , 14 , 9  , 8  , 11 , 10 , } , 
-  {6  , 7  , 4  , 5  , 2  , 3  , 0  , 1  , 14 , 15 , 12 , 13 , 10 , 11 , 8  , 9  , } , 
-  {7  , 6  , 5  , 4  , 3  , 2  , 1  , 0  , 15 , 14 , 13 , 12 , 11 , 10 , 9  , 8  , } , 
-  {8  , 9  , 10 , 11 , 12 , 13 , 14 , 15 , 0  , 1  , 2  , 3  , 4  , 5  , 6  , 7  , } , 
-  {9  , 8  , 11 , 10 , 13 , 12 , 15 , 14 , 1  , 0  , 3  , 2  , 5  , 4  , 7  , 6  , } , 
-  {10 , 11 , 8  , 9  , 14 , 15 , 12 , 13 , 2  , 3  , 0  , 1  , 6  , 7  , 4  , 5  , } , 
-  {11 , 10 , 9  , 8  , 15 , 14 , 13 , 12 , 3  , 2  , 1  , 0  , 7  , 6  , 5  , 4  , } , 
-  {12 , 13 , 14 , 15 , 8  , 9  , 10 , 11 , 4  , 5  , 6  , 7  , 0  , 1  , 2  , 3  , } , 
-  {13 , 12 , 15 , 14 , 9  , 8  , 11 , 10 , 5  , 4  , 7  , 6  , 1  , 0  , 3  , 2  , } , 
-  {14 , 15 , 12 , 13 , 10 , 11 , 8  , 9  , 6  , 7  , 4  , 5  , 2  , 3  , 0  , 1  , } , 
-  {15 , 14 , 13 , 12 , 11 , 10 , 9  , 8  , 7  , 6  , 5  , 4  , 3  , 2  , 1  , 0  , } , 
-}
-
-local function _bxor(a,b)
-    local res, c = 0, 1
-    while a > 0 and b > 0 do
-        local a2, b2 = a % 16, b % 16
-        res = res + tab[a2+1][b2+1]*c
-        a = (a-a2)/16
-        b = (b-b2)/16
-        c = c*16
-    end
-    res = res + a*c + b*c
-    return res
+local function _bxor(x, y)
+   local z = 0
+   for i = 0, 31 do
+      if (x % 2 == 0) then                      -- x had a '0' in bit i
+         if ( y % 2 == 1) then                  -- y had a '1' in bit i
+            y = y - 1 
+            z = z + 2 ^ i                       -- set bit i of z to '1' 
+         end
+      else                                      -- x had a '1' in bit i
+         x = x - 1
+         if (y % 2 == 0) then                   -- y had a '0' in bit i
+            z = z + 2 ^ i                       -- set bit i of z to '1' 
+         else
+            y = y - 1 
+         end
+      end
+      y = y / 2
+      x = x / 2
+   end
+   return z
 end
 
 
@@ -177,7 +164,6 @@ freelist_index = {}
 blocks_in_freelist = 0
 
 local journal_fh
-
 
 --
 -- FUSE methods (object)
@@ -338,11 +324,11 @@ journal_write = function(self, journal_meta, journal_entry)
     if js == 0 or next_bi ~= floor(current_js/BLOCKSIZE) then
         journal_fh:seek('set', BLOCKSIZE * next_bi)
         journal_fh:write(empty_block, empty_block)
-        journal_fh:flush()
+        --journal_fh:flush()
     end
     journal_fh:seek('set', current_js)
     journal_fh:write(journal_entry)
-    journal_fh:flush()
+    --journal_fh:flush()
     journal_meta.size = current_js + #journal_entry 
     return 
 end,
@@ -428,31 +414,30 @@ create = function(self, path, mode, flags, cuid, cgid, ctime)
 end,
 
 read = function(self, path, size, offset, obj)
-    local entity = fs_meta[path]
-    local data   = {}
-    local map   = entity.blockmap
+    local map   = fs_meta[path].blockmap
     local findx = floor(offset/BLOCKSIZE)
     local lindx = floor((offset + size)/BLOCKSIZE) - 1
     if findx == lindx then
-        local b = self:_getblock(data, findx, map[findx]) 
+        local b = self:_getblock(map[findx]) 
         return 0, substr(b,offset % BLOCKSIZE,offset%BLOCKSIZE+size)
     end
     local str = {}
     for i=findx,lindx-1 do
-        push(str, self:_getblock(data, i, map[i]))
+        push(str, self:_getblock(map[i]))
     end
-    push(str, substr(self:_getblock(data, lindx, map[lindx]),0,offset%BLOCKSIZE+size))
+    push(str, substr(self:_getblock(map[lindx]),0,offset%BLOCKSIZE+size))
     return 0, join(str)
 end,
 
 write = function(self, path, buf, offset, obj)
 
-    -- This call is *NOT* journaled, instead it's _setblock() calls are
+    -- This call is *NOT* journaled, instead the resulting _setblock() calls
+    -- are.. we don't want to rewrite on journal traversal, we just want to set
+    -- the blocks again
 
     local entity = fs_meta[path]
     local data   = {}
     local map    = entity.blockmap
-    local dirty  = {}
     local findx  = floor(offset/BLOCKSIZE)
 
     -- BLOCKSIZE matches ours + offset falls on the start: just assign
@@ -461,13 +446,12 @@ write = function(self, path, buf, offset, obj)
 		
 		-- no need to read in block, it will be written entirely anyway
         data[findx]  = buf
-        dirty[findx] = true
 
     else
         local lindx = floor((offset + #buf - 1)/BLOCKSIZE)
 
 		-- used for both next if/else sections
-        local block = self:_getblock(data, findx, map[findx])
+        local block = self:_getblock(map[findx])
 
         -- fast and nice: same index, but substr() is needed
         if findx == lindx then
@@ -475,7 +459,6 @@ write = function(self, path, buf, offset, obj)
             local b = a + #buf + 1
 
             data[findx]  = substr(block,0,a) .. buf .. substr(block,b)
-            dirty[findx] = true
         else
             -- simple checks don't match: multiple blocks need to be adjusted.
             -- I'll do that in 3 steps:
@@ -484,39 +467,36 @@ write = function(self, path, buf, offset, obj)
             local boffset = offset - findx*BLOCKSIZE
             local a,b = 0,BLOCKSIZE - boffset
             data[findx]  = substr(block, 0, boffset) .. substr(buf, a, b)
-            dirty[findx] = true
 
             -- middle: doesn't necessarily have to exist
             for i=findx+1,lindx-1 do
 				-- no need to read in block, it will be written entirely anyway
                 a, b = b + 1, b + 1 + BLOCKSIZE
                 data[i] = substr(buf, a, b) 
-                dirty[i] = true
             end
 
             -- end: maybe exist, as findx!=lindx, and not ending on blockboundary
-        	block = self:_getblock(data, lindx, map[lindx])
+        	block = self:_getblock(map[lindx])
             a, b = b + 1, b + 1 + BLOCKSIZE
             data[lindx]  = substr(buf, a, b) .. substr(block, b)
-            dirty[lindx] = true
 
         end
     end
 
     -- rewrite all blocks to disk
-    for i, _ in pairs(dirty) do
-        dirty[i] = self:_getnextfreeblocknr(entity)
+    for i, _ in pairs(data) do
+        local bd = data[i]
 
-        self:_writeblock(path, dirty[i], data[i])
+        data[i] = self:_getnextfreeblocknr(entity)
 
-		-- make our little cache empty again
-		data[i] = nil
+        self:_writeblock(path, data[i], bd)
     end
     
-    -- adjust the metadata in the journal
+    -- adjust the metadata in the journal, we piggyback the new size in this
+    -- call. This way, when traversing the journal, we can set the size correct
     local size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
-    for i, _ in pairs(dirty) do
-        self:_setblock(path, i, dirty[i], size)
+    for i, _ in pairs(data) do
+        self:_setblock(path, i, data[i], size)
     end
 
     return #buf
@@ -584,11 +564,12 @@ end,
 _writeblock = function(self, path, blocknr, blockdata)
 
     -- this is an actual write of the data to disk. This does not change the
-    -- meta journal, that is done seperately, and at the end
+    -- meta journal, that is done seperately, and, it is done at the end.
     --
+    
     assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
     assert(journal_fh:write(blockdata))
-    assert(journal_fh:flush())
+    --assert(journal_fh:flush())
 end,
 
 _setblock = function(self, path, i, bnr, size, ctime)
@@ -624,17 +605,17 @@ _setblock = function(self, path, i, bnr, size, ctime)
     return 0
 end,
 
-_getblock = function(self, data, i, blocknr)
-
-    if not data[i] and blocknr ~= nil then
+_getblock = function(self, blocknr)
+    
+    if blocknr ~= nil then
         assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
         local a = assert(journal_fh:read(BLOCKSIZE))
         print("_getblock|return:"..#a)
         if a and #a then
-            data[i] = a
+            return a
         end
     end
-    return data[i] or empty_block
+    return empty_block
 end,
 
 release = function(self, path, obj)
@@ -676,7 +657,7 @@ truncate = function(self, path, size, ctime)
         -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
         -- this init mount()), the block was written allready
         if self then
-            local str = self:_getblock({}, lindx, m.blockmap[lindx])
+            local str = self:_getblock(m.blockmap[lindx])
 
             -- always write as a new block
             local bnr = self:_getnextfreeblocknr(m)
