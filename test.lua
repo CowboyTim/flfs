@@ -282,17 +282,40 @@ end
 
 print = oldprint
 
+function printHash(r)
+    for i,v in pairs(r) do
+        print("i:"..tostring(i)..",v:"..tostring(v))
+    end
+end
+
+local r
+
+local tbl = {
+    list={[55]=121, [131]=131,  [33]=33, [667]=667,  [800]=800, [710]=711},   
+    map ={[0]=55, [76]=131, [77]=33, [78]=667, [100]=800, [121]=710}
+}
+tbl = list:new(tbl)
+oldprint(list.tostring(tbl))
+r=list.truncate(tbl, 40)
+oldprint(list.tostring(tbl))
+printHash(r)
+
 oldprint(list.tostring(n))
-list.truncate(n, 0)
+r = list.truncate(n, 0)
+printHash(r)
 oldprint(list.tostring(n))
 
 oldprint(list.tostring(p))
-list.truncate(p, 70)
+r = list.truncate(p, 70)
+printHash(r)
 oldprint(list.tostring(p))
-list.truncate(p, 64)
+r = list.truncate(p, 64)
+printHash(r)
 oldprint(list.tostring(p))
-list.truncate(p, 1)
+r = list.truncate(p, 1)
+printHash(r)
 oldprint(list.tostring(p))
 
-list.truncate(p, 0)
+r = list.truncate(p, 0)
+printHash(r)
 oldprint(list.tostring(p))
