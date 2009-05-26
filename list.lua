@@ -64,6 +64,8 @@ function P:truncate(v)
     local bl    = rawget(self, '_original')
     local index = bl.indx
     local list  = bl.list
+
+    local remainder = {}
  
     -- second: sorted
     local delete = false
@@ -74,14 +76,18 @@ function P:truncate(v)
         local high = low_bi + (list[low_bn] - low_bn)
         if v >= low_bi and v <= high  then
             if v == low_bi then
+                remainder[low_bn] = list[low_bn]
                 list[low_bn] = nil
                 bl[low_bi]   = nil
             else
+                local old_list = list[low_bn]
                 list[low_bn] = low_bn + (v - low_bi) - 1
                 push(newindex, index[j])
                 delete = true
+                remainder[low_bn + (v - low_bi)] = old_list
             end
         elseif delete then
+            remainder[low_bn] = list[low_bn]
             list[low_bn] = nil
             bl[low_bi]   = nil
         else
@@ -89,7 +95,7 @@ function P:truncate(v)
         end
     end
     bl.indx = newindex
-    return
+    return remainder
 end
 
 function P:match(v)
