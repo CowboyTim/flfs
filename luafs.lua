@@ -33,7 +33,7 @@ local ENOATTR      = -516
 local ENOTSUPP     = -524
 
 local BLOCKSIZE    = 4096
-local STRIDE       = 2
+local STRIDE       = 1
 local MAXINT       = 2^32 -1
 
 --
@@ -324,11 +324,11 @@ journal_write = function(self, journal_meta, journal_entry)
     if js == 0 or next_bi ~= floor(current_js/BLOCKSIZE) then
         journal_fh:seek('set', BLOCKSIZE * next_bi)
         journal_fh:write(empty_block, empty_block)
-        --journal_fh:flush()
+        journal_fh:flush()
     end
     journal_fh:seek('set', current_js)
     journal_fh:write(journal_entry)
-    --journal_fh:flush()
+    journal_fh:flush()
     journal_meta.size = current_js + #journal_entry 
     return 
 end,
@@ -487,7 +487,7 @@ write = function(self, path, buf, offset, obj)
     for i, _ in pairs(data) do
         local bd = data[i]
 
-        data[i] = self:_getnextfreeblocknr(entity)
+        data[i] = self:_getnextfreeblocknr(entity, STRIDE)
 
         self:_writeblock(path, data[i], bd)
     end
@@ -502,7 +502,7 @@ write = function(self, path, buf, offset, obj)
     return #buf
 end,
 
-_getnextfreeblocknr = function (self, meta)
+_getnextfreeblocknr = function (self, meta, stride_wanted)
     meta.freelist = meta.freelist or {}
     local bfree = meta.freelist
     local nextfreeblock = next(bfree)
@@ -511,30 +511,33 @@ _getnextfreeblocknr = function (self, meta)
             next_free_stride = freelist_index[1]
             print('_getnextfreeblocknr:'..next_free_stride..
                   ',size:'..freelist[next_free_stride])
-            if freelist[next_free_stride] - next_free_stride > STRIDE then
-                freelist[next_free_stride + STRIDE] = freelist[next_free_stride]
-                freelist_index[1] = next_free_stride + STRIDE
+            if freelist[next_free_stride] - next_free_stride >= stride_wanted then
+                freelist[next_free_stride + stride_wanted] = freelist[next_free_stride]
+                freelist_index[1] = next_free_stride + stride_wanted
             else 
                 print('_getnextfreeblocknr:setting to nil:'..next_free_stride)
                 shift(freelist_index)
             end
             freelist[next_free_stride] = nil
-            blocks_in_freelist = blocks_in_freelist - STRIDE
+            blocks_in_freelist = blocks_in_freelist - stride_wanted
         else
             -- watermark shift
             next_free_stride = block_nr
-            block_nr = block_nr + STRIDE
+            block_nr = block_nr + stride_wanted
             if block_nr >= max_block_nr then
-                block_nr = block_nr - STRIDE
+                block_nr = block_nr - stride_wanted
                 error({code=1, message="Disk Full"})
             end
         end
         nextfreeblock = next_free_stride
-        bfree[nextfreeblock + 1] = nextfreeblock + STRIDE - 1
+        if stride_wanted > 1 then
+            bfree[nextfreeblock + 1] = nextfreeblock + stride_wanted - 1
+        end
     else
+        print("from file freelist:"..nextfreeblock..',bfree[nextfreeblock]:'..bfree[nextfreeblock])
         if     bfree[nextfreeblock] ~= nextfreeblock 
            and not bfree[nextfreeblock+1]
-           and nextfreeblock < STRIDE*floor(nextfreeblock/STRIDE) + STRIDE then
+           and nextfreeblock < stride_wanted*floor(nextfreeblock/stride_wanted) + stride_wanted then
             bfree[nextfreeblock+1] = bfree[nextfreeblock]
         end
         bfree[nextfreeblock]   = nil
@@ -543,16 +546,17 @@ _getnextfreeblocknr = function (self, meta)
 end,
 
 _addtofreelist = function (self, blocklist)
+    if not blocklist then 
+        return  
+    end
     for i,b in pairs(blocklist) do
-        i = STRIDE * floor(i/STRIDE)
-        b = STRIDE * floor(b/STRIDE) + STRIDE - 1
         print("_addtofreelist:i:"..i..",b:"..b)
         freelist[i] = b
         blocks_in_freelist = blocks_in_freelist + b - i + 1
         push(freelist_index, i)
     end
     -- FIXME: bad idea, implement a better one
-    luafs._canonicalize_freelist(self)
+    --luafs._canonicalize_freelist(self)
     return
 end,
 
@@ -569,7 +573,7 @@ _writeblock = function(self, path, blocknr, blockdata)
     
     assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
     assert(journal_fh:write(blockdata))
-    --assert(journal_fh:flush())
+    assert(journal_fh:flush())
 end,
 
 _setblock = function(self, path, i, bnr, size, ctime)
@@ -583,7 +587,7 @@ _setblock = function(self, path, i, bnr, size, ctime)
     -- FIXME: hack ahead: if it does exist. Also pop the freelist when we're
     -- traversing the journal set block_nr ok for journal traversal
     if not self then
-        luafs._getnextfreeblocknr(self, e)
+        luafs._getnextfreeblocknr(self, e, STRIDE)
         if bnr > block_nr then
             block_nr = bnr
         end
@@ -651,8 +655,11 @@ truncate = function(self, path, size, ctime)
         -- update blockmap
         local lindx = floor(size/BLOCKSIZE)
 
-        -- FIXME: free the blocks to the filesystem's freelist!
-        list.truncate(m.blockmap, lindx + 1)
+        -- free the blocks to the filesystem's freelist!
+        local remainder = list.truncate(m.blockmap, lindx + 1)
+        luafs._addtofreelist(self, m.freelist)
+        luafs._addtofreelist(self, remainder)
+        
 
         -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
         -- this init mount()), the block was written allready
@@ -660,7 +667,7 @@ truncate = function(self, path, size, ctime)
             local str = self:_getblock(m.blockmap[lindx])
 
             -- always write as a new block
-            local bnr = self:_getnextfreeblocknr(m)
+            local bnr = self:_getnextfreeblocknr(m, STRIDE)
 
             self:_writeblock(path, bnr, substr(str,0,size%BLOCKSIZE))
 
@@ -682,6 +689,7 @@ truncate = function(self, path, size, ctime)
     else 
 
         -- free the blocks: just add to the filesystem's freelist
+        luafs._addtofreelist(self, m.freelist)
         luafs._addtofreelist(self, (rawget(m.blockmap, '_original')).list)
 
         m.freelist = nil
@@ -814,8 +822,13 @@ _unlink = function(self, path, ctime)
 
     fs_meta[path] = nil
 
-    if entity.nlink == 0 and entity.blockmap then
-        luafs._addtofreelist(self, (rawget(entity.blockmap, '_original')).list)
+    if entity.nlink == 0 then
+        if entity.freelist then
+            luafs._addtofreelist(self, entity.freelist)
+        end
+        if entity.blockmap then
+            luafs._addtofreelist(self, (rawget(entity.blockmap, '_original')).list)
+        end
     end
 
     return 0
@@ -1099,7 +1112,7 @@ serializemeta = function(self)
             elseif e.blockmap then
 
                 -- dump the freelist
-                if e.freelist then
+                if e.freelist and next(e.freelist) then
                     fl = {}
                     for i, v in pairs(e.freelist) do
                         push(fl, '['..i..']='..v)
