@@ -256,7 +256,7 @@ function P:insert(i, v)
             --print("plain append")
             list[last_block] = v
             return
-        elseif i >= next_index and v ~= next_block then
+        elseif i >= next_index then
             -- sparse append: just add
             --print("sparse append")
             self[i] = v
