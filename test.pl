@@ -55,7 +55,7 @@ $r = syswrite($fh, 'y' x 4096, 4096, 0);
 if(!defined $r){
     die "Error syswrite: $!\n";
 }
-close($fh);
+close($fh) or die "Error closing $file: $!\n";
 
 sysopen($fh, $file, O_APPEND|O_RDWR)
     or die "Error opening $file: $!\n";

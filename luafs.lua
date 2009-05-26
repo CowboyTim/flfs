@@ -27,6 +27,7 @@ local ENOENT       = -2
 local EEXIST       = -17
 local EINVAL       = -22
 local EFBIG        = -27
+local ENOSPC       = -28
 local ENAMETOOLONG = -36
 local ENOSYS       = -38
 local ENOATTR      = -516
@@ -113,8 +114,7 @@ local function splitpath(string)
 end
 
 local function mk_mode(owner, group, world, sticky)
-    sticky = sticky or 0
-    return owner * S_UID + group * S_GID + world + sticky * S_SID
+    return owner * S_UID + group * S_GID + world + (sticky or 0) * S_SID
 end
 
 local function new_meta(mymode, uid, gid, now)
@@ -485,11 +485,19 @@ write = function(self, path, buf, offset, obj)
 
     -- rewrite all blocks to disk
     for i, _ in pairs(data) do
-        local bd = data[i]
 
-        data[i] = self:_getnextfreeblocknr(entity, STRIDE)
+        -- find a new block that's free
+        local ok, new_block_nr = pcall(luafs._getnextfreeblocknr, self, entity, STRIDE)
+        if not ok then
+            obj.errorcode = ENOSPC
+            return ENOSPC
+        end
+        
+        -- really writ the data to the new block
+        self:_writeblock(path, new_block_nr, data[i])
 
-        self:_writeblock(path, data[i], bd)
+        -- save the blocknr for the journal
+        data[i] = new_block_nr
     end
     
     -- adjust the metadata in the journal, we piggyback the new size in this
@@ -584,10 +592,15 @@ _setblock = function(self, path, i, bnr, size, ctime)
 
     local e = fs_meta[path]
 
-    -- FIXME: hack ahead: if it does exist. Also pop the freelist when we're
-    -- traversing the journal set block_nr ok for journal traversal
+    -- FIXME: hack ahead: when traversing the journal, self is nil. So we
+    -- pretent to requested a block here, just like it is done in write()
+    -- itself. The returned block should be the same as bnr here I think.
     if not self then
-        luafs._getnextfreeblocknr(self, e, STRIDE)
+        local dummy = luafs._getnextfreeblocknr(self, e, STRIDE)
+        if dummy ~= bnr then
+            error("Internal error: bnr~=dummy: bnr:"..
+                    bnr..",_getnextfreeblocknr():"..dummy)
+        end
         if bnr > block_nr then
             block_nr = bnr
         end
@@ -628,6 +641,9 @@ release = function(self, path, obj)
 end,
 
 flush = function(self, path, obj)
+    if obj and obj.errorcode then
+        return obj.errorcode
+    end
     return 0
 end,
 
@@ -651,6 +667,15 @@ truncate = function(self, path, size, ctime)
     local m = fs_meta[path]
 
     if size > 0 then
+    
+        -- if the truncate call would make it bigger: just adjust the size, no
+        -- point in allready allocating a block
+        if size >= m.size then
+            m.size = size
+        end
+
+        -- new size would be smaller: update at least 1 block + give all the
+        -- remainder truncated blocks back to the freelist
 
         -- update blockmap
         local lindx = floor(size/BLOCKSIZE)
@@ -662,14 +687,17 @@ truncate = function(self, path, size, ctime)
         
 
         -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
-        -- this init mount()), the block was written allready
+        --        this init mount()), the block was written allready
         if self then
             local str = self:_getblock(m.blockmap[lindx])
 
             -- always write as a new block
-            local bnr = self:_getnextfreeblocknr(m, STRIDE)
+            local ok, new_block_nr = pcall(luafs._getnextfreeblocknr, self, m, STRIDE)
+            if not ok then
+                return ENOSPC
+            end
 
-            self:_writeblock(path, bnr, substr(str,0,size%BLOCKSIZE))
+            self:_writeblock(path, new_block_nr, substr(str,0,size%BLOCKSIZE))
 
             -- this puts an entry in the journal for the block set, with
             -- correct size and all.
@@ -684,7 +712,7 @@ truncate = function(self, path, size, ctime)
             -- This is because I don't want to have no truncate(): then I would
             -- need _setblock() for all null-ed blocks.
             --
-            self:_setblock(path, lindx, bnr, size)
+            self:_setblock(path, lindx, new_block_nr, size)
         end
     else 
 
