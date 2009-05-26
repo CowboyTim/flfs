@@ -86,7 +86,7 @@ function P:truncate(v)
                 delete = true
                 remainder[low_bn + (v - low_bi)] = old_list
             end
-        elseif delete then
+        elseif delete or low_bi > v then
             remainder[low_bn] = list[low_bn]
             list[low_bn] = nil
             bl[low_bi]   = nil
