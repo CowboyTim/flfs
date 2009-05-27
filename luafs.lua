@@ -414,9 +414,19 @@ create = function(self, path, mode, flags, cuid, cgid, ctime)
 end,
 
 read = function(self, path, size, offset, obj)
-    local map   = fs_meta[path].blockmap
-    local findx = floor(offset/BLOCKSIZE)
-    local lindx = floor((offset + size)/BLOCKSIZE) - 1
+    local msize = offset + size
+    if msize > fs_meta[path].size then
+        local fsize  = fs_meta[path].size
+        if offset >= fsize then
+            return 0, ''
+        end
+        size = fsize - BLOCKSIZE * floor(fsize/BLOCKSIZE)
+    end
+    --print("findx:"..findx..",lindx:"..lindx)
+    --
+    local map    = fs_meta[path].blockmap
+    local findx  = floor(offset/BLOCKSIZE)
+    local lindx  = floor(msize/BLOCKSIZE) - 1
     if findx == lindx then
         local b = self:_getblock(map[findx]) 
         return 0, substr(b,offset % BLOCKSIZE,offset%BLOCKSIZE+size)
@@ -439,6 +449,7 @@ write = function(self, path, buf, offset, obj)
     local data   = {}
     local map    = entity.blockmap
     local findx  = floor(offset/BLOCKSIZE)
+    local sorteddata = {} 
 
     -- BLOCKSIZE matches ours + offset falls on the start: just assign
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
@@ -446,9 +457,12 @@ write = function(self, path, buf, offset, obj)
 		
 		-- no need to read in block, it will be written entirely anyway
         data[findx]  = buf
+        push(sorteddata,findx)
 
     else
         local lindx = floor((offset + #buf - 1)/BLOCKSIZE)
+
+        print("findx:"..findx..",lindx:"..lindx)
 
 		-- used for both next if/else sections
         local block = self:_getblock(map[findx])
@@ -459,6 +473,7 @@ write = function(self, path, buf, offset, obj)
             local b = a + #buf + 1
 
             data[findx]  = substr(block,0,a) .. buf .. substr(block,b)
+            push(sorteddata,findx)
         else
             -- simple checks don't match: multiple blocks need to be adjusted.
             -- I'll do that in 3 steps:
@@ -467,24 +482,27 @@ write = function(self, path, buf, offset, obj)
             local boffset = offset - findx*BLOCKSIZE
             local a,b = 0,BLOCKSIZE - boffset
             data[findx]  = substr(block, 0, boffset) .. substr(buf, a, b)
+            push(sorteddata,findx)
 
             -- middle: doesn't necessarily have to exist
             for i=findx+1,lindx-1 do
 				-- no need to read in block, it will be written entirely anyway
                 a, b = b + 1, b + 1 + BLOCKSIZE
                 data[i] = substr(buf, a, b) 
+                push(sorteddata,i)
             end
 
             -- end: maybe exist, as findx!=lindx, and not ending on blockboundary
         	block = self:_getblock(map[lindx])
             a, b = b + 1, b + 1 + BLOCKSIZE
             data[lindx]  = substr(buf, a, b) .. substr(block, b)
+            push(sorteddata,lindx)
 
         end
     end
 
     -- rewrite all blocks to disk
-    for i, _ in pairs(data) do
+    for _, blockdata_i in ipairs(sorteddata) do
 
         -- find a new block that's free
         local ok, new_block_nr = pcall(luafs._getnextfreeblocknr, self, entity, STRIDE)
@@ -493,18 +511,18 @@ write = function(self, path, buf, offset, obj)
             return ENOSPC
         end
         
-        -- really writ the data to the new block
-        self:_writeblock(path, new_block_nr, data[i])
+        -- really write the data to the new block
+        self:_writeblock(path, new_block_nr, data[blockdata_i])
 
         -- save the blocknr for the journal
-        data[i] = new_block_nr
+        data[blockdata_i] = new_block_nr
     end
     
     -- adjust the metadata in the journal, we piggyback the new size in this
     -- call. This way, when traversing the journal, we can set the size correct
     local size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
-    for i, _ in pairs(data) do
-        self:_setblock(path, i, data[i], size)
+    for _, blockdata_i in ipairs(sorteddata) do
+        self:_setblock(path, blockdata_i, data[blockdata_i], size)
     end
 
     return #buf
@@ -1193,6 +1211,7 @@ fuse_options = {
     '-onegative_timeout=0',
     '-oattr_timeout=0',
     '-ouse_ino',
+    '-odirect_io',
     '-oreaddir_ino',
     '-omax_read=131072',
     '-omax_readahead=131072',
