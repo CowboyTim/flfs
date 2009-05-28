@@ -53,6 +53,13 @@ local split     = string.gmatch
 local match     = string.match
 local find      = string.find
 
+-- logging methods
+local oldprint = print
+local function say(...)
+    return oldprint(time(), unpack(arg))
+end
+local debug = 0
+
 local function shift(t)
     return pop(t,1)
 end
@@ -286,9 +293,8 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
                 end
             end
 
-            -- ....and save it to the metafile
-            local je = prefix..join(o,",")..")\n"
-            luafs.journal_write(self, journal_meta, je)
+            -- ....and save it to the journal
+            luafs.journal_write(self, journal_meta, prefix..join(o,",")..")\n")
 
             -- really call the function
             return fusemethod(self, unpack(arg))
@@ -1082,6 +1088,8 @@ end,
 
 serializemeta = function(self)
 
+    say("making a new state")
+
     -- a hash that transfers inode numbers to the first dumped path, this
     -- serves the purpose of making the hardlinks correct. Of course, we only
     -- keep them here when the number of links > 1. (Or in case a directory is
@@ -1182,13 +1190,12 @@ serializemeta = function(self)
     end
     new_meta_fh:write(empty_block, empty_block)
     new_meta_fh:close()
+    say("making a new state:done")
 
     return 0
 end,
 
-metadev  = "/dev/loop7",
-metafile = "/home/tim/tmp/fs/test.lua",
-
+metafile = "/home/tim/tmp/fs/test.lua", -- FIXME: implement correct state save
 }
 
 --
@@ -1197,11 +1204,7 @@ metafile = "/home/tim/tmp/fs/test.lua",
 -- -s option: single threaded. multithreaded also works, but no performance
 -- gain (yet), in fact, it's slower.
 --
-options = {
-    'luafs',
-    ...
-}
-fuse_options = {
+local default_fuse_options = {
     '-s', 
     '-f', 
     '-oallow_other',
@@ -1216,49 +1219,38 @@ fuse_options = {
     '-omax_read=131072',
     '-omax_readahead=131072',
     '-omax_write=131072',
-
 }
-
-for i,w in ipairs(fuse_options) do
-    push(options, w)
+for i,w in ipairs(default_fuse_options) do
+    push(arg, w)
 end
+
+say("using block device "..arg[1])
 
 -- check the mountpoint
 local here = lfs.currentdir()
-if not lfs.chdir(options[2]) then
-    print("mountpoint "..options[2].." does not exist")
+if not lfs.chdir(arg[2]) then
+    print("mountpoint "..arg[2].." does not exist")
     os.exit(1)
 end
 lfs.chdir(here)
 
 -- simple options check
 if select('#', ...) < 1 then
-    print(string.format("Usage: %s <mount point> [fuse mount options]", arg[0]))
+    print(format("Usage: %s <device|file> <mount point> [fuse mount options]", arg[0]))
     os.exit(1)
 end
 
-
 --
--- debugging section
+-- debugging section: work with closures
 --
-local debug = 0
-for i,w in ipairs(options) do
-    if w == '-d'  then
+for i,w in ipairs(arg) do
+    if w == '-d' then
         debug = 1
     end
 end
-oldprint = print
-function say(...)
-    return oldprint(time(), unpack(arg))
-end
 if debug == 0 then 
     function print() end
-end
-
-say("start")
-
--- debug?
-if debug then
+else
     for k, f in pairs(luafs) do
         if type(f) == 'function' then
             luafs[k] = function(self,...) 
@@ -1276,12 +1268,17 @@ if debug then
     end
 end
 
-for i,w in ipairs(options) do
-    print("option:"..w)
+say("starting luafs fuse daemon")
+for i,w in ipairs(arg) do
+    say("option:"..w)
 end
 
+-- set correct block device (or file) from the options at commandline
+luafs.metadev = arg[1]
+
 --
--- start the main fuse loop
+-- start the main fuse loop: gives away the control to the C, which in turn
+-- gives the control back to this lua vm instance upon FUSE-interrupts for the
+-- different  luaf methods here
 --
-print("main()")
-fuse.main(luafs, options)
+fuse.main(luafs, arg)
