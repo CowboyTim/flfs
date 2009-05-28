@@ -1,9 +1,8 @@
 #!/usr/bin/env lua
 
 local fuse = require 'fuse'
-local lfs  = require "lfs"
-
-list = require 'list'        -- must be global for loadstring()!
+local lfs  = require 'lfs'
+local list = require 'list'
 
 local S_WID     = 1 --world
 local S_GID     = 2^3 --group
@@ -45,7 +44,6 @@ local floor     = math.floor
 local time      = os.time
 local join      = table.concat
 local push      = table.insert
-push            = table.insert  -- must be global for loadstring()!
 local pop       = table.remove
 local sort      = table.sort
 local format    = string.format
@@ -53,16 +51,16 @@ local split     = string.gmatch
 local match     = string.match
 local find      = string.find
 
+local function shift(t)
+    return pop(t,1)
+end
+
 -- logging methods
 local oldprint = print
 local function say(...)
     return oldprint(time(), unpack(arg))
 end
 local debug = 0
-
-local function shift(t)
-    return pop(t,1)
-end
 
 local function pairsByKeys(t, f)
     local a = {}
@@ -201,7 +199,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --        because luafs is a global that can be accessed (while 'self'
     --        cannot as it is local?!):
     --
-    --          loadstring(<journalentry>)()
+    --          load(<journalentry>)()
     --
     --
     say("start reading metadata from "..self.metadev) 
@@ -214,7 +212,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     local journal_f,err=load(function()
         if not start_done then
             start_done = true
-            return "local a\n"
+            return "local a\nlocal list = require 'list'\nlocal push = table.push\n"
         end
         local nstr = journal_fh:read(BLOCKSIZE)
         -- first char of the next block is null, thus it is the end of
