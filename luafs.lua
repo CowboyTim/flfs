@@ -275,6 +275,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     for k, _ in pairs(change_methods) do
         local fusemethod  = self[k]
         local prefix      = "luafs."..k.."(self,"
+        local journal_write = luafs.journal_write
         self[k] = function(self,...) 
 
             -- always add the time at the end, methods that change the metastate
@@ -292,7 +293,10 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             end
 
             -- ....and save it to the journal
-            luafs.journal_write(self, journal_meta, prefix..join(o,",")..")\n")
+            local journal_entry = prefix..join(o,",")..")\n"
+            if not journal_write(journal_meta, journal_entry) then
+                return ENOSPC
+            end
 
             -- really call the function
             return fusemethod(self, unpack(arg))
@@ -322,10 +326,13 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     return 0
 end,
 
-journal_write = function(self, journal_meta, journal_entry)
+journal_write = function(journal_meta, journal_entry)
     local current_js = journal_meta.size
     local next_bi    = floor((current_js+#journal_entry)/BLOCKSIZE)
     if js == 0 or next_bi ~= floor(current_js/BLOCKSIZE) then
+        if next_bi > journal_meta.freelist[0] then
+            return false
+        end
         journal_fh:seek('set', BLOCKSIZE * next_bi)
         journal_fh:write(empty_block, empty_block)
         journal_fh:flush()
@@ -334,7 +341,7 @@ journal_write = function(self, journal_meta, journal_entry)
     journal_fh:write(journal_entry)
     journal_fh:flush()
     journal_meta.size = current_js + #journal_entry 
-    return 
+    return true 
 end,
 
 rmdir = function(self, path, ctime)
