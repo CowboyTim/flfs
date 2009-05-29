@@ -122,6 +122,12 @@ local function mk_mode(owner, group, world, sticky)
     return owner * S_UID + group * S_GID + world + (sticky or 0) * S_SID
 end
 
+-- FIXME: implement correct journal size'ing
+block_nr           = 1 * 1024 * 1024 * 1024 / BLOCKSIZE
+inode_start        = 1
+max_block_nr       = 0
+blocks_in_freelist = 0
+
 local function new_meta(mymode, uid, gid, now)
     inode_start = inode_start + 1
     return {
@@ -152,23 +158,88 @@ local empty_block = join(t)
 -- globally to go over the journal easy
 --
 --
--- FIXME: implement correct journal size'ing
-block_nr     = 1 * 1024 * 1024 * 1024 / BLOCKSIZE
-inode_start  = 1
-max_block_nr = 0
-fs_meta      = {}
+
+fs_meta            = {}
+freelist           = {}
+freelist_index     = {}
+
+local fs_meta        = fs_meta
 fs_meta["/"]               = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 fs_meta["/"].directorylist = {}
-fs_meta["/"].nlink         = 3
-fs_meta["/.journal"]          = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid, gid, time())
-fs_meta["/.journal"].blockmap = list:new{}
-fs_meta["/.journal"].freelist = {[0]=block_nr - 1}
-
-freelist       = {}
-freelist_index = {}
-blocks_in_freelist = 0
+fs_meta["/"].nlink         = 2
 
 local journal_fh
+local journal_meta    = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid, gid, time())
+journal_meta.blockmap = list:new{}
+journal_meta.freelist = {[0]=block_nr - 1}
+
+local function getnextfreeblocknr(meta, stride_wanted)
+    local bfree = meta.freelist
+    if not bfree then
+        meta.freelist = {}
+        bfree = meta.freelist
+    end
+    local nextfreeblock = next(bfree)
+    if not nextfreeblock then 
+        if #freelist_index > 0 then
+            next_free_stride = freelist_index[1]
+            print('getnextfreeblocknr:'..next_free_stride..
+                  ',size:'..freelist[next_free_stride])
+            if freelist[next_free_stride] - next_free_stride >= stride_wanted then
+                freelist[next_free_stride + stride_wanted] = freelist[next_free_stride]
+                freelist_index[1] = next_free_stride + stride_wanted
+            else 
+                print('getnextfreeblocknr:setting to nil:'..next_free_stride)
+                shift(freelist_index)
+            end
+            freelist[next_free_stride] = nil
+            blocks_in_freelist = blocks_in_freelist - stride_wanted
+        else
+            -- watermark shift
+            next_free_stride = block_nr
+            block_nr = block_nr + stride_wanted
+            if block_nr >= max_block_nr then
+                block_nr = block_nr - stride_wanted
+                error({code=1, message="Disk Full"})
+            end
+        end
+        nextfreeblock = next_free_stride
+        if stride_wanted > 1 then
+            bfree[nextfreeblock + 1] = nextfreeblock + stride_wanted - 1
+        end
+    else
+        print("from file freelist:"..nextfreeblock..',bfree[nextfreeblock]:'..bfree[nextfreeblock])
+        if     bfree[nextfreeblock] ~= nextfreeblock 
+           and not bfree[nextfreeblock+1]
+           and nextfreeblock < stride_wanted*floor(nextfreeblock/stride_wanted) + stride_wanted then
+            bfree[nextfreeblock+1] = bfree[nextfreeblock]
+        end
+        bfree[nextfreeblock]   = nil
+    end
+    return nextfreeblock
+end
+
+local function _canonicalize_freelist()
+    freelist_index = {}
+    local last
+    for i,v in pairsByKeys(freelist) do
+        if not last then
+            last = i
+            push(freelist_index, last)
+        else
+            if i == freelist[last] + 1 then
+                freelist[last] = freelist[i]
+                freelist[i]    = nil
+            else
+                last = i
+                push(freelist_index, last)
+            end
+        end
+    end
+    return
+end
+
+
 
 --
 -- FUSE methods (object)
@@ -212,7 +283,10 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     local journal_f,err=load(function()
         if not start_done then
             start_done = true
-            return "local a\nlocal list = require 'list'\nlocal push = table.push\n"
+            return [[
+                local chunk_function
+                local fs_meta = _G.fs_meta
+            ]]
         end
         local nstr = journal_fh:read(BLOCKSIZE)
         -- first char of the next block is null, thus it is the end of
@@ -232,7 +306,13 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
                 print(l)
                 journal_str = substr(journal_str, #l + 1)
                 print("return, len:"..#journal_str)
-                return "a=function() "..l.." end\na()\n"
+                return [[ 
+                    chunk_function=function() ]]
+                    ..l..
+                    [[ 
+                        end
+                        chunk_function() 
+                    ]]
             end
             nstr = journal_fh:read(BLOCKSIZE)
             print("len:"..#journal_str)
@@ -247,9 +327,9 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
         print("was error:"..err)
         error(err)
     end
-    local journal_meta = fs_meta["/.journal"]
     journal_meta.size = journal_size 
-    say("done reading metadata from "..self.metadev) 
+    say("done reading metadata from "..self.metadev..", journal size was:"..journal_size) 
+    say("current parameters: inode_start:"..inode_start..",block_nr:"..block_nr) 
 
     --
     -- loop over all the functions and add a wrapper to write meta data`
@@ -294,7 +374,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
 
             -- ....and save it to the journal
             local journal_entry = prefix..join(o,",")..")\n"
-            if not journal_write(journal_meta, journal_entry) then
+            if not journal_write(journal_entry) then
                 return ENOSPC
             end
 
@@ -326,7 +406,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     return 0
 end,
 
-journal_write = function(journal_meta, journal_entry)
+journal_write = function(journal_entry)
     local current_js = journal_meta.size
     local next_bi    = floor((current_js+#journal_entry)/BLOCKSIZE)
     if js == 0 or next_bi ~= floor(current_js/BLOCKSIZE) then
@@ -516,7 +596,7 @@ write = function(self, path, buf, offset, obj)
     for _, blockdata_i in ipairs(sorteddata) do
 
         -- find a new block that's free
-        local ok, new_block_nr = pcall(luafs._getnextfreeblocknr, self, entity, STRIDE)
+        local ok, new_block_nr = pcall(getnextfreeblocknr, entity, STRIDE)
         if not ok then
             obj.errorcode = ENOSPC
             return ENOSPC
@@ -537,49 +617,6 @@ write = function(self, path, buf, offset, obj)
     end
 
     return #buf
-end,
-
-_getnextfreeblocknr = function (self, meta, stride_wanted)
-    meta.freelist = meta.freelist or {}
-    local bfree = meta.freelist
-    local nextfreeblock = next(bfree)
-    if not nextfreeblock then 
-        if #freelist_index > 0 then
-            next_free_stride = freelist_index[1]
-            print('_getnextfreeblocknr:'..next_free_stride..
-                  ',size:'..freelist[next_free_stride])
-            if freelist[next_free_stride] - next_free_stride >= stride_wanted then
-                freelist[next_free_stride + stride_wanted] = freelist[next_free_stride]
-                freelist_index[1] = next_free_stride + stride_wanted
-            else 
-                print('_getnextfreeblocknr:setting to nil:'..next_free_stride)
-                shift(freelist_index)
-            end
-            freelist[next_free_stride] = nil
-            blocks_in_freelist = blocks_in_freelist - stride_wanted
-        else
-            -- watermark shift
-            next_free_stride = block_nr
-            block_nr = block_nr + stride_wanted
-            if block_nr >= max_block_nr then
-                block_nr = block_nr - stride_wanted
-                error({code=1, message="Disk Full"})
-            end
-        end
-        nextfreeblock = next_free_stride
-        if stride_wanted > 1 then
-            bfree[nextfreeblock + 1] = nextfreeblock + stride_wanted - 1
-        end
-    else
-        print("from file freelist:"..nextfreeblock..',bfree[nextfreeblock]:'..bfree[nextfreeblock])
-        if     bfree[nextfreeblock] ~= nextfreeblock 
-           and not bfree[nextfreeblock+1]
-           and nextfreeblock < stride_wanted*floor(nextfreeblock/stride_wanted) + stride_wanted then
-            bfree[nextfreeblock+1] = bfree[nextfreeblock]
-        end
-        bfree[nextfreeblock]   = nil
-    end
-    return nextfreeblock
 end,
 
 _addtofreelist = function (self, blocklist)
@@ -625,10 +662,10 @@ _setblock = function(self, path, i, bnr, size, ctime)
     -- pretent to requested a block here, just like it is done in write()
     -- itself. The returned block should be the same as bnr here I think.
     if not self then
-        local dummy = luafs._getnextfreeblocknr(self, e, STRIDE)
+        local dummy = getnextfreeblocknr(e, STRIDE)
         if dummy ~= bnr then
             error("Internal error: bnr~=dummy: bnr:"..
-                    bnr..",_getnextfreeblocknr():"..dummy)
+                    bnr..",getnextfreeblocknr():"..dummy)
         end
         if bnr > block_nr then
             block_nr = bnr
@@ -721,7 +758,7 @@ truncate = function(self, path, size, ctime)
             local str = self:_getblock(m.blockmap[lindx])
 
             -- always write as a new block
-            local ok, new_block_nr = pcall(luafs._getnextfreeblocknr, self, m, STRIDE)
+            local ok, new_block_nr = pcall(getnextfreeblocknr, m, STRIDE)
             if not ok then
                 return ENOSPC
             end
@@ -1071,26 +1108,6 @@ statfs = function(self, path)
         MAXINT
 end,
 
-_canonicalize_freelist = function(self)
-    freelist_index = {}
-    local last
-    for i,v in pairsByKeys(freelist) do
-        if not last then
-            last = i
-            push(freelist_index, last)
-        else
-            if i == freelist[last] + 1 then
-                freelist[last] = freelist[i]
-                freelist[i]    = nil
-            else
-                last = i
-                push(freelist_index, last)
-            end
-        end
-    end
-    return
-end,
-
 serializemeta = function(self)
 
     say("making a new state")
@@ -1107,7 +1124,7 @@ serializemeta = function(self)
                       ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
 
     -- write the freelist
-    self:_canonicalize_freelist()
+    _canonicalize_freelist()
     local fl = {}
     for i, v in pairs(freelist) do
         push(fl, '['..i..']='..v)
