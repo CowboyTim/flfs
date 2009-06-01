@@ -122,6 +122,8 @@ local function mk_mode(owner, group, world, sticky)
     return owner * S_UID + group * S_GID + world + (sticky or 0) * S_SID
 end
 
+local metafile = "/home/tim/tmp/fs/test.lua" -- FIXME: implement correct state save
+
 -- FIXME: implement correct journal size'ing
 block_nr           = 1 * 1024 * 1024 * 1024 / BLOCKSIZE
 inode_start        = 1
@@ -159,11 +161,11 @@ local empty_block = join(t)
 --
 --
 
-fs_meta            = {}
-freelist           = {}
-freelist_index     = {}
+fs_meta        = {}
+freelist       = {}
+freelist_index = {}
 
-local fs_meta        = fs_meta
+local fs_meta              = fs_meta
 fs_meta["/"]               = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
 fs_meta["/"].directorylist = {}
 fs_meta["/"].nlink         = 2
@@ -173,6 +175,16 @@ local journal_meta    = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid, gid, ti
 journal_meta.blockmap = list:new{}
 journal_meta.freelist = {[0]=block_nr - 1}
 
+
+--
+-- This function finds a new free block, with a preferred stride size. It goes
+-- looking in the file's currently assigned free list first. If nothing is free
+-- anymore, it searches the global freelist. If nothing is found there, it
+-- shifts the watermark.
+--
+-- It raises an exception if no free block can be found, thus when no space is
+-- available anymore
+--
 local function getnextfreeblocknr(meta, stride_wanted)
     local bfree = meta.freelist
     if not bfree then
@@ -219,6 +231,12 @@ local function getnextfreeblocknr(meta, stride_wanted)
     return nextfreeblock
 end
 
+
+--
+-- This method is used when the filesystem state needs to be serialized: we
+-- sort the freelist + collapse the adjacent blocks into longer block strides
+-- as much as possible
+--
 local function _canonicalize_freelist()
     freelist_index = {}
     local last
@@ -238,6 +256,202 @@ local function _canonicalize_freelist()
     end
     return
 end
+
+
+--
+-- This method add the blocks in the argument (typically from a file) to the
+-- freelist again
+--
+local function addtofreelist(blocklist)
+    if not blocklist then 
+        return  
+    end
+    for i,b in pairs(blocklist) do
+        print("addtofreelist:i:"..i..",b:"..b)
+        freelist[i] = b
+        blocks_in_freelist = blocks_in_freelist + b - i + 1
+        push(freelist_index, i)
+    end
+    -- FIXME: bad idea, implement a better one
+    --luafs._canonicalize_freelist(self)
+    return
+end
+
+
+--
+-- This method frees a single block. This is typically upon re writing the
+-- file: a new block is always requested and the old block needs to be freed,
+-- this method serves for freeing that new block. It is currently added to the
+-- freelist of the file itself
+--
+local function freesingleblock(b, meta)
+    meta.freelist[b] = b
+    return
+end
+
+
+--
+-- This method reads a block from the block device (or file)
+--
+local function readblock(blocknr)
+    
+    if blocknr ~= nil then
+        assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
+        local a = assert(journal_fh:read(BLOCKSIZE))
+        print("readblock|return:"..#a)
+        if a and #a then
+            return a
+        end
+    end
+    return empty_block
+end
+
+
+--
+-- This method writes a block to the block device (or file)
+--
+local function writeblock(path, blocknr, blockdata)
+    assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
+    assert(journal_fh:write(blockdata))
+    assert(journal_fh:flush())
+end
+
+
+--
+-- This method writes a journal entry to the journal
+--
+local function journal_write(journal_entry)
+    local current_js = journal_meta.size
+    local next_bi    = floor((current_js+#journal_entry)/BLOCKSIZE)
+    if js == 0 or next_bi ~= floor(current_js/BLOCKSIZE) then
+        if next_bi > journal_meta.freelist[0] then
+            return false
+        end
+        journal_fh:seek('set', BLOCKSIZE * next_bi)
+        journal_fh:write(empty_block, empty_block)
+        journal_fh:flush()
+    end
+    journal_fh:seek('set', current_js)
+    journal_fh:write(journal_entry)
+    journal_fh:flush()
+    journal_meta.size = current_js + #journal_entry 
+    return true 
+end
+
+
+-- 
+-- This method serializes the entire filesystem meta state in one go on the
+-- block device (or file) in the meta journal section.
+--
+local function serializemeta()
+
+    say("making a new state")
+
+    -- a hash that transfers inode numbers to the first dumped path, this
+    -- serves the purpose of making the hardlinks correct. Of course, we only
+    -- keep them here when the number of links > 1. (Or in case a directory is
+    -- linked, >2)
+    local inode = {}
+
+    -- write the main globals first
+    local new_meta_fh = io.open(metafile..'.new', 'w')
+    new_meta_fh:write('block_nr,inode_start,blocks_in_freelist='
+                      ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
+
+    -- write the freelist
+    _canonicalize_freelist()
+    local fl = {}
+    for i, v in pairs(freelist) do
+        push(fl, '['..i..']='..v)
+    end
+    new_meta_fh:write('freelist = {', join(fl, ','), '}\n')
+    new_meta_fh:write('freelist_index = {', join(freelist_index, ','), '}\n')
+
+    -- loop over all filesystem entries
+    for k,e in pairs(fs_meta) do
+        local prefix = 'fs_meta["'..k..'"]'
+        if inode[e.ino] then
+
+            -- just add a link
+            new_meta_fh:write(prefix,' = fs_meta["',inode[e.ino],'"]\n')
+
+        else
+
+            -- save that ref for our hardlink tree check
+            if (e.directorylist and e.nlink > 2) or (e.nlink and e.nlink > 1) then
+                inode[e.ino] = k
+            end
+
+            -- regular values + symlink target
+            local meta_str = {}
+            for key, value in pairs(e) do
+                if type(value) == "number" then
+                    push(meta_str, key..'='..value)
+                elseif type(value) == "string" then
+                    push(meta_str, key..'='..format("%q", value))
+                end
+            end
+            new_meta_fh:write(prefix,'={', join(meta_str, ","))
+
+            -- metadata:xattr
+            if e.xattr then
+                local xattr_str = {}
+                for x,v in pairs(e.xattr) do
+                    if type(v) == 'boolean' and v == true then
+                        push(xattr_str, '["'..x..'"]=true')
+                        break
+                    end
+                    if type(v) == 'boolean' and v == false then
+                        push(xattr_str, '["'..x..'"]=false')
+                        break
+                    end
+                    push(xattr_str, '["'..x..'"]='..format('%q',v))
+                end
+                push(meta_str, 'xattr={'..join(xattr_str, ',')..'}')
+            end
+
+            -- 'real' data entry stuff
+            local t = {}
+            if e.directorylist then
+
+                -- directorylist
+                for d, _ in pairs(e.directorylist) do
+                    push(t, '["'..d..'"]=true')
+                end
+                new_meta_fh:write(',directorylist={',join(t, ','),'}}\n')
+
+            elseif e.blockmap then
+
+                -- dump the freelist
+                if e.freelist and next(e.freelist) then
+                    fl = {}
+                    for i, v in pairs(e.freelist) do
+                        push(fl, '['..i..']='..v)
+                    end
+                    new_meta_fh:write(',freelist={',
+                        join(fl, ','),
+                    '}')
+                end
+
+                -- dump the blockmap
+                new_meta_fh:write(',blockmap=list:new{',
+                    list.tostring(e.blockmap),
+                '}}\n')
+
+            else
+
+                -- was a symlink, node,.. just close the tag
+                new_meta_fh:write('}\n')
+            end
+        end
+    end
+    new_meta_fh:write(empty_block, empty_block)
+    new_meta_fh:close()
+    say("making a new state:done")
+
+    return 0
+end
+
 
 
 
@@ -335,27 +549,26 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     -- loop over all the functions and add a wrapper to write meta data`
     --
     local change_methods = {
-        rmdir       = true,
-        mkdir       = true,
-        create      = true,
-        mknod       = true,
-        setxattr    = true,
-        removexattr = true,
-        truncate    = true,
-        link        = true,
-        unlink      = true,
-        symlink     = true,
-        chmod       = true,
-        chown       = true,
-        utime       = true,
-        utimens     = true,
-        rename      = true,
-        _setblock   = true
+        'rmdir',
+        'mkdir',
+        'create',
+        'mknod',
+        'setxattr',
+        'removexattr',
+        'truncate',
+        'link',
+        'unlink',
+        'symlink',
+        'chmod',
+        'chown',
+        'utime',
+        'utimens',
+        'rename',
+        '_setblock'
     }
-    for k, _ in pairs(change_methods) do
-        local fusemethod  = self[k]
-        local prefix      = "luafs."..k.."(self,"
-        local journal_write = luafs.journal_write
+    for _, k in ipairs(change_methods) do
+        local fusemethod    = self[k]
+        local prefix        = "luafs."..k.."(self,"
         self[k] = function(self,...) 
 
             -- always add the time at the end, methods that change the metastate
@@ -384,14 +597,8 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     end
 
     -- add the context wrapper
-    local context_needing_methods = {
-        mkdir       = true,
-        create      = true,
-        mknod       = true,
-        symlink     = true,
-        chown       = true
-    }
-    for k, _ in pairs(context_needing_methods) do
+    local context_needing_methods = { 'mkdir', 'create', 'mknod', 'symlink', 'chown' }
+    for _, k in ipairs(context_needing_methods) do
         local fusemethod  = self[k]
         local fusecontext = fuse.context
         self[k] = function(self,...) 
@@ -404,24 +611,6 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     end
 
     return 0
-end,
-
-journal_write = function(journal_entry)
-    local current_js = journal_meta.size
-    local next_bi    = floor((current_js+#journal_entry)/BLOCKSIZE)
-    if js == 0 or next_bi ~= floor(current_js/BLOCKSIZE) then
-        if next_bi > journal_meta.freelist[0] then
-            return false
-        end
-        journal_fh:seek('set', BLOCKSIZE * next_bi)
-        journal_fh:write(empty_block, empty_block)
-        journal_fh:flush()
-    end
-    journal_fh:seek('set', current_js)
-    journal_fh:write(journal_entry)
-    journal_fh:flush()
-    journal_meta.size = current_js + #journal_entry 
-    return true 
 end,
 
 rmdir = function(self, path, ctime)
@@ -519,14 +708,14 @@ read = function(self, path, size, offset, obj)
     local findx  = floor(offset/BLOCKSIZE)
     local lindx  = floor(msize/BLOCKSIZE) - 1
     if findx == lindx then
-        local b = self:_getblock(map[findx]) 
+        local b = readblock(map[findx]) 
         return 0, substr(b,offset % BLOCKSIZE,offset%BLOCKSIZE+size)
     end
     local str = {}
     for i=findx,lindx-1 do
-        push(str, self:_getblock(map[i]))
+        push(str, readblock(map[i]))
     end
-    push(str, substr(self:_getblock(map[lindx]),0,offset%BLOCKSIZE+size))
+    push(str, substr(readblock(map[lindx]),0,offset%BLOCKSIZE+size))
     return 0, join(str)
 end,
 
@@ -556,7 +745,7 @@ write = function(self, path, buf, offset, obj)
         print("findx:"..findx..",lindx:"..lindx)
 
 		-- used for both next if/else sections
-        local block = self:_getblock(map[findx])
+        local block = readblock(map[findx])
 
         -- fast and nice: same index, but substr() is needed
         if findx == lindx then
@@ -584,7 +773,7 @@ write = function(self, path, buf, offset, obj)
             end
 
             -- end: maybe exist, as findx!=lindx, and not ending on blockboundary
-        	block = self:_getblock(map[lindx])
+        	block = readblock(map[lindx])
             a, b = b + 1, b + 1 + BLOCKSIZE
             data[lindx]  = substr(buf, a, b) .. substr(block, b)
             push(sorteddata,lindx)
@@ -603,7 +792,7 @@ write = function(self, path, buf, offset, obj)
         end
         
         -- really write the data to the new block
-        self:_writeblock(path, new_block_nr, data[blockdata_i])
+        writeblock(path, new_block_nr, data[blockdata_i])
 
         -- save the blocknr for the journal
         data[blockdata_i] = new_block_nr
@@ -617,37 +806,6 @@ write = function(self, path, buf, offset, obj)
     end
 
     return #buf
-end,
-
-_addtofreelist = function (self, blocklist)
-    if not blocklist then 
-        return  
-    end
-    for i,b in pairs(blocklist) do
-        print("_addtofreelist:i:"..i..",b:"..b)
-        freelist[i] = b
-        blocks_in_freelist = blocks_in_freelist + b - i + 1
-        push(freelist_index, i)
-    end
-    -- FIXME: bad idea, implement a better one
-    --luafs._canonicalize_freelist(self)
-    return
-end,
-
-_freesingleblock = function (self, b, meta)
-    meta.freelist[b] = b
-    return
-end,
-
-_writeblock = function(self, path, blocknr, blockdata)
-
-    -- this is an actual write of the data to disk. This does not change the
-    -- meta journal, that is done seperately, and, it is done at the end.
-    --
-    
-    assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
-    assert(journal_fh:write(blockdata))
-    assert(journal_fh:flush())
 end,
 
 _setblock = function(self, path, i, bnr, size, ctime)
@@ -674,7 +832,7 @@ _setblock = function(self, path, i, bnr, size, ctime)
 
     -- free the previous block
     if e.blockmap[i] then
-        luafs._freesingleblock(self, e.blockmap[i], e)
+        freesingleblock(e.blockmap[i], e)
     end
     
     -- reset that block with the new one
@@ -686,19 +844,6 @@ _setblock = function(self, path, i, bnr, size, ctime)
     e.mtime       = ctime
 
     return 0
-end,
-
-_getblock = function(self, blocknr)
-    
-    if blocknr ~= nil then
-        assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
-        local a = assert(journal_fh:read(BLOCKSIZE))
-        print("_getblock|return:"..#a)
-        if a and #a then
-            return a
-        end
-    end
-    return empty_block
 end,
 
 release = function(self, path, obj)
@@ -748,14 +893,14 @@ truncate = function(self, path, size, ctime)
 
         -- free the blocks to the filesystem's freelist!
         local remainder = list.truncate(m.blockmap, lindx + 1)
-        luafs._addtofreelist(self, m.freelist)
-        luafs._addtofreelist(self, remainder)
+        addtofreelist(m.freelist)
+        addtofreelist(remainder)
         
 
         -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
         --        this init mount()), the block was written allready
         if self then
-            local str = self:_getblock(m.blockmap[lindx])
+            local str = readblock(m.blockmap[lindx])
 
             -- always write as a new block
             local ok, new_block_nr = pcall(getnextfreeblocknr, m, STRIDE)
@@ -763,7 +908,7 @@ truncate = function(self, path, size, ctime)
                 return ENOSPC
             end
 
-            self:_writeblock(path, new_block_nr, substr(str,0,size%BLOCKSIZE))
+            writeblock(path, new_block_nr, substr(str,0,size%BLOCKSIZE))
 
             -- this puts an entry in the journal for the block set, with
             -- correct size and all.
@@ -783,8 +928,8 @@ truncate = function(self, path, size, ctime)
     else 
 
         -- free the blocks: just add to the filesystem's freelist
-        luafs._addtofreelist(self, m.freelist)
-        luafs._addtofreelist(self, (rawget(m.blockmap, '_original')).list)
+        addtofreelist(m.freelist)
+        addtofreelist((rawget(m.blockmap, '_original')).list)
 
         m.freelist = nil
         m.blockmap = list:new()
@@ -918,10 +1063,10 @@ _unlink = function(self, path, ctime)
 
     if entity.nlink == 0 then
         if entity.freelist then
-            luafs._addtofreelist(self, entity.freelist)
+            addtofreelist(entity.freelist)
         end
         if entity.blockmap then
-            luafs._addtofreelist(self, (rawget(entity.blockmap, '_original')).list)
+            addtofreelist((rawget(entity.blockmap, '_original')).list)
         end
     end
 
@@ -1021,7 +1166,7 @@ end,
 
 destroy = function(self, return_value_from_init)
     journal_fh:close()
-    self:serializemeta()
+    serializemeta()
     return 0
 end,
 
@@ -1108,116 +1253,6 @@ statfs = function(self, path)
         MAXINT
 end,
 
-serializemeta = function(self)
-
-    say("making a new state")
-
-    -- a hash that transfers inode numbers to the first dumped path, this
-    -- serves the purpose of making the hardlinks correct. Of course, we only
-    -- keep them here when the number of links > 1. (Or in case a directory is
-    -- linked, >2)
-    local inode = {}
-
-    -- write the main globals first
-    local new_meta_fh = io.open(self.metafile..'.new', 'w')
-    new_meta_fh:write('block_nr,inode_start,blocks_in_freelist='
-                      ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
-
-    -- write the freelist
-    _canonicalize_freelist()
-    local fl = {}
-    for i, v in pairs(freelist) do
-        push(fl, '['..i..']='..v)
-    end
-    new_meta_fh:write('freelist = {', join(fl, ','), '}\n')
-    new_meta_fh:write('freelist_index = {', join(freelist_index, ','), '}\n')
-
-    -- loop over all filesystem entries
-    for k,e in pairs(fs_meta) do
-        local prefix = 'fs_meta["'..k..'"]'
-        if inode[e.ino] then
-
-            -- just add a link
-            new_meta_fh:write(prefix,' = fs_meta["',inode[e.ino],'"]\n')
-
-        else
-
-            -- save that ref for our hardlink tree check
-            if (e.directorylist and e.nlink > 2) or (e.nlink and e.nlink > 1) then
-                inode[e.ino] = k
-            end
-
-            -- regular values + symlink target
-            local meta_str = {}
-            for key, value in pairs(e) do
-                if type(value) == "number" then
-                    push(meta_str, key..'='..value)
-                elseif type(value) == "string" then
-                    push(meta_str, key..'='..format("%q", value))
-                end
-            end
-            new_meta_fh:write(prefix,'={', join(meta_str, ","))
-
-            -- metadata:xattr
-            if e.xattr then
-                local xattr_str = {}
-                for x,v in pairs(e.xattr) do
-                    if type(v) == 'boolean' and v == true then
-                        push(xattr_str, '["'..x..'"]=true')
-                        break
-                    end
-                    if type(v) == 'boolean' and v == false then
-                        push(xattr_str, '["'..x..'"]=false')
-                        break
-                    end
-                    push(xattr_str, '["'..x..'"]='..format('%q',v))
-                end
-                push(meta_str, 'xattr={'..join(xattr_str, ',')..'}')
-            end
-
-            -- 'real' data entry stuff
-            local t = {}
-            if e.directorylist then
-
-                -- directorylist
-                for d, _ in pairs(e.directorylist) do
-                    push(t, '["'..d..'"]=true')
-                end
-                new_meta_fh:write(',directorylist={',join(t, ','),'}}\n')
-
-            elseif e.blockmap then
-
-                -- dump the freelist
-                if e.freelist and next(e.freelist) then
-                    fl = {}
-                    for i, v in pairs(e.freelist) do
-                        push(fl, '['..i..']='..v)
-                    end
-                    new_meta_fh:write(',freelist={',
-                        join(fl, ','),
-                    '}')
-                end
-
-                -- dump the blockmap
-                new_meta_fh:write(',blockmap=list:new{',
-                    list.tostring(e.blockmap),
-                '}}\n')
-
-            else
-
-                -- was a symlink, node,.. just close the tag
-                new_meta_fh:write('}\n')
-            end
-        end
-    end
-    new_meta_fh:write(empty_block, empty_block)
-    new_meta_fh:close()
-    say("making a new state:done")
-
-    return 0
-end,
-
-metafile = "/home/tim/tmp/fs/test.lua", -- FIXME: implement correct state save
 }
 
 --
@@ -1236,7 +1271,7 @@ local default_fuse_options = {
     '-onegative_timeout=0',
     '-oattr_timeout=0',
     '-ouse_ino',
-    '-odirect_io',
+    --'-odirect_io',
     '-oreaddir_ino',
     '-omax_read=131072',
     '-omax_readahead=131072',
