@@ -55,6 +55,16 @@ local function shift(t)
     return pop(t,1)
 end
 
+-- padding function
+local function pad(str, count, what)
+    str = str or ''
+    local t = {}
+    for i=#str,count-1 do
+        push(t, what or "\000")
+    end
+    return str..join(t)
+end
+
 -- logging methods
 local oldprint = print
 local function say(...)
@@ -125,7 +135,7 @@ end
 local metafile = "/home/tim/tmp/fs/test.lua" -- FIXME: implement correct state save
 
 -- FIXME: implement correct journal size'ing
-block_nr           = 1 * 1024 * 1024 * 1024 / BLOCKSIZE
+block_nr           = 256 * 1024 * 1024 / BLOCKSIZE
 inode_start        = 1
 max_block_nr       = 0
 blocks_in_freelist = 0
@@ -148,11 +158,7 @@ end
 local uid,gid,pid,puid,pgid = fuse.context()
 
 -- empty block precalculated: block of \x00 for size BLOCKSIZE
-local t = {}
-for i=1,BLOCKSIZE do
-    push(t, "\000")
-end
-local empty_block = join(t)
+local empty_block = pad('', BLOCKSIZE, '\000')
 
 
 --
@@ -171,9 +177,17 @@ fs_meta["/"].directorylist = {}
 fs_meta["/"].nlink         = 2
 
 local journal_fh
-local journal_meta    = new_meta(set_bits(mk_mode(7,5,5), S_IFREG), uid, gid, time())
-journal_meta.blockmap = list:new{}
-journal_meta.freelist = {[0]=block_nr - 1}
+
+-- divide the journal section into 2. Note that although they have different
+-- names, they are and will be interchangeable sections: the journal can hold
+-- state, and the state can hold the journal. In fact, they will always hold
+-- both even, we just switch between the two sections.
+local m = floor(block_nr/2)
+journals = {
+    current = {freelist={[0] = m - 1},       size=0},
+    other   = {freelist={[m] = block_nr - 1},size=0}
+}
+local journals = journals
 
 
 --
@@ -316,25 +330,35 @@ local function writeblock(path, blocknr, blockdata)
     assert(journal_fh:flush())
 end
 
-
 --
 -- This method writes a journal entry to the journal
 --
-local function journal_write(journal_entry)
-    local current_js = journal_meta.size
-    local next_bi    = floor((current_js+#journal_entry)/BLOCKSIZE)
-    if js == 0 or next_bi ~= floor(current_js/BLOCKSIZE) then
-        if next_bi > journal_meta.freelist[0] then
-            return false
+local function journal_write(...)
+    for _, journal_entry in ipairs(arg) do
+        local journal_meta = journals['current']
+        local current_js   = journal_meta.size
+        local next_bi      = floor((current_js+#journal_entry)/BLOCKSIZE)
+        local first_free_block = next(journal_meta.freelist)
+        print("journal_write:current_js:"..current_js..
+              ",next_bi:"..next_bi..
+              ",first_free_block:"..first_free_block..
+              ",journal_entry_size:"..#journal_entry)
+        if next_bi ~= floor(current_js/BLOCKSIZE) then
+            if first_free_block + next_bi >= journal_meta.freelist[first_free_block] then
+                -- FIXME: euh, infinite loop when the state also doesn't fit in
+                -- the space preserved...
+                serializemeta()
+                return journal_write(unpack(arg))
+            end
+            journal_fh:seek('set', BLOCKSIZE * (first_free_block + next_bi))
+            journal_fh:write(empty_block, empty_block)
+            journal_fh:flush()
         end
-        journal_fh:seek('set', BLOCKSIZE * next_bi)
-        journal_fh:write(empty_block, empty_block)
+        journal_fh:seek('set', (BLOCKSIZE * first_free_block) + current_js)
+        journal_fh:write(journal_entry)
         journal_fh:flush()
+        journal_meta.size = current_js + #journal_entry 
     end
-    journal_fh:seek('set', current_js)
-    journal_fh:write(journal_entry)
-    journal_fh:flush()
-    journal_meta.size = current_js + #journal_entry 
     return true 
 end
 
@@ -347,6 +371,12 @@ local function serializemeta()
 
     say("making a new state")
 
+    -- we switch the journal meta's
+    journals['current'], journals['other'] = journals['other'], journals['current']
+
+    -- reset that new journal we're about to write in
+    journals['current'].size = 0
+
     -- a hash that transfers inode numbers to the first dumped path, this
     -- serves the purpose of making the hardlinks correct. Of course, we only
     -- keep them here when the number of links > 1. (Or in case a directory is
@@ -354,9 +384,8 @@ local function serializemeta()
     local inode = {}
 
     -- write the main globals first
-    local new_meta_fh = io.open(metafile..'.new', 'w')
-    new_meta_fh:write('block_nr,inode_start,blocks_in_freelist='
-                      ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
+    journal_write('block_nr,inode_start,blocks_in_freelist='
+                  ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
 
     -- write the freelist
     _canonicalize_freelist()
@@ -364,8 +393,10 @@ local function serializemeta()
     for i, v in pairs(freelist) do
         push(fl, '['..i..']='..v)
     end
-    new_meta_fh:write('freelist = {', join(fl, ','), '}\n')
-    new_meta_fh:write('freelist_index = {', join(freelist_index, ','), '}\n')
+    journal_write('freelist = {', join(fl, ','), '}\n')
+    journal_write('freelist_index = {', join(freelist_index, ','), '}\n')
+
+    local listtostring = list.tostring
 
     -- loop over all filesystem entries
     for k,e in pairs(fs_meta) do
@@ -373,7 +404,7 @@ local function serializemeta()
         if inode[e.ino] then
 
             -- just add a link
-            new_meta_fh:write(prefix,' = fs_meta["',inode[e.ino],'"]\n')
+            journal_write(prefix,' = fs_meta["',inode[e.ino],'"]\n')
 
         else
 
@@ -391,7 +422,7 @@ local function serializemeta()
                     push(meta_str, key..'='..format("%q", value))
                 end
             end
-            new_meta_fh:write(prefix,'={', join(meta_str, ","))
+            journal_write(prefix,'={', join(meta_str, ","))
 
             -- metadata:xattr
             if e.xattr then
@@ -418,7 +449,7 @@ local function serializemeta()
                 for d, _ in pairs(e.directorylist) do
                     push(t, '["'..d..'"]=true')
                 end
-                new_meta_fh:write(',directorylist={',join(t, ','),'}}\n')
+                journal_write(',directorylist={',join(t, ','),'}}\n')
 
             elseif e.blockmap then
 
@@ -428,30 +459,41 @@ local function serializemeta()
                     for i, v in pairs(e.freelist) do
                         push(fl, '['..i..']='..v)
                     end
-                    new_meta_fh:write(',freelist={',
+                    journal_write(',freelist={',
                         join(fl, ','),
                     '}')
                 end
 
                 -- dump the blockmap
-                new_meta_fh:write(',blockmap=list:new{',
-                    list.tostring(e.blockmap),
+                journal_write(',blockmap=list:new{',
+                    listtostring(e.blockmap),
                 '}}\n')
 
             else
 
                 -- was a symlink, node,.. just close the tag
-                new_meta_fh:write('}\n')
+                journal_write('}\n')
             end
         end
     end
-    new_meta_fh:write(empty_block, empty_block)
-    new_meta_fh:close()
+
     say("making a new state:done")
+    say("switching state to 'other'")
+    journals['current'], journals['other'] = journals['other'], journals['current']
+    journals['current'].size = 0
+    local init_journal = [[
+        local journals = _G.journals
+        journals['current'], journals['other'] = journals['other'], journals['current']
+
+    ]]
+    journal_write(pad(init_journal, BLOCKSIZE, ' '))
+    journals['current'], journals['other'] = journals['other'], journals['current']
+    
 
     return 0
 end
 
+_G.serializemeta = serializemeta
 
 
 
@@ -488,7 +530,24 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
     --
     --
     say("start reading metadata from "..self.metadev) 
+    local start_done = false
     journal_fh:seek("set",0)
+    local journal_f,err=load(function() 
+        if start_done then
+            return nil
+        end
+        start_done = true
+        return journal_fh:read(BLOCKSIZE) 
+    end)
+    if journal_f then
+        local status, err = pcall(journal_f)
+        if not status then
+            print("was error:"..err)
+        end
+    end
+    local position = BLOCKSIZE * (next(journals['current'].freelist))
+    say("reading journal from "..position)
+    journal_fh:seek("set",position)
 
     local journal_size = 0
     local journal_str  = ''
@@ -520,12 +579,12 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
                 print(l)
                 journal_str = substr(journal_str, #l + 1)
                 print("return, len:"..#journal_str)
-                return [[ 
-                    chunk_function=function() ]]
+                return 
+                    [[ chunk_function=function() ]]
                     ..l..
                     [[ 
-                        end
-                        chunk_function() 
+                       end
+                       chunk_function() 
                     ]]
             end
             nstr = journal_fh:read(BLOCKSIZE)
@@ -541,7 +600,20 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
         print("was error:"..err)
         error(err)
     end
-    journal_meta.size = journal_size 
+    journals['current'].size = journal_size 
+    if journal_size == 0 then
+        -- init, was a clean filesystem
+        say("initializing filesystem")
+        local init_journal = [[
+            -- we're current: at block 0, we just write some code to make sure
+            -- that is understandeable, it is basically pretty pointless at
+            -- this point. Note that this 'journal entry' is padded until
+            -- BLOCKSIZE.
+
+        ]]
+        journal_write(pad(init_journal, BLOCKSIZE, ' '))
+    end
+
     say("done reading metadata from "..self.metadev..", journal size was:"..journal_size) 
     say("current parameters: inode_start:"..inode_start..",block_nr:"..block_nr) 
 
@@ -1165,8 +1237,8 @@ fgetattr = function(self, path, obj)
 end,
 
 destroy = function(self, return_value_from_init)
-    journal_fh:close()
     serializemeta()
+    journal_fh:close()
     return 0
 end,
 
