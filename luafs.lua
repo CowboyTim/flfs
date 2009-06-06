@@ -1032,6 +1032,9 @@ rename = function(self, from, to, ctime)
     fs_meta[to]   = fs_meta[from]
     fs_meta[from] = nil
 
+    -- new pjd needs this?!
+    fs_meta[to].ctime = ctime
+
     -- rename both parent's references to the renamed entity
     local p,e
 
@@ -1283,8 +1286,11 @@ listxattr = function(self, path, size)
 end,
 
 removexattr = function(self, path, name)
-    if fs_meta[path] and fs_meta[path].xattr then
-        fs_meta[path].xattr[name] = nil
+    local e = fs_meta[path]
+    if e then
+        if e.xattr then
+            e.xattr[name] = nil
+        end
         return 0
     else
         return ENOENT
@@ -1304,7 +1310,7 @@ end,
 
 getxattr = function(self, path, name, size)
     local e = fs_meta[path]
-    if fs_meta[path] then
+    if e then
         -- xattr 'name' not found is empty string ""
         e.xattr = e.xattr or {}
         return e.xattr[name] or ""
