@@ -29,6 +29,7 @@ local EFBIG        = -27
 local ENOSPC       = -28
 local ENAMETOOLONG = -36
 local ENOSYS       = -38
+local ENOTEMPTY    = -39
 local ENOATTR      = -516
 local ENOTSUPP     = -524
 
@@ -1019,20 +1020,30 @@ rename = function(self, from, to, ctime)
     -- becomes that target directory + "/" + basename(from).
     --
 
-    -- if the target still exists, e.g. when you move a file to another file,
-    -- first free the blocks: just add to the filesystem's freelist. For this
-    -- we can simply unlink it, just make sure we use the real unlink, not the
-    -- journalled one. Of course, we only unlink when it's a file, not in other
-    -- cases. unlink here also maintains the nlink parameter.
-    if fs_meta[to] and fs_meta[to].blockmap then
-        luafs._unlink(self, to, ctime)
+    if fs_meta[to] then
+
+        -- target is a non-empty directory? return ENOTEMPTY errno.h
+        if fs_meta[to].directorylist and next(fs_meta[to].directorylist) then
+            return ENOTEMPTY
+        end
+
+        -- if the target still exists, e.g. when you move a file to another
+        -- file,first free the blocks: just add to the filesystem's freelist. 
+        -- For this we can simply unlink it, just make sure we use the real 
+        -- unlink, not the journalled one. Of course, we only unlink when 
+        -- it's a file, not in other cases. unlink here also maintains the 
+        -- nlink parameter.
+
+        if fs_meta[to].blockmap then
+            luafs._unlink(self, to, ctime)
+        end
     end
 
     -- rename main node
     fs_meta[to]   = fs_meta[from]
     fs_meta[from] = nil
 
-    -- new pjd needs this?!
+    -- ctime of the target changes
     fs_meta[to].ctime = ctime
 
     -- rename both parent's references to the renamed entity
@@ -1056,6 +1067,9 @@ rename = function(self, from, to, ctime)
     -- mechanism, but don't forget, how many times does one rename e.g.
     -- /usr and such.. ;-). for a plain file (or empty subdir), this is for
     -- isn't even executed (looped actually)
+    --
+    -- NOTE: 'to' here is of course the freshly moved entry, the previous 'to'
+    --       if any is gone, and will be garbage collected.
     --
     if fs_meta[to].directorylist then
         local ts = to   .. "/"
