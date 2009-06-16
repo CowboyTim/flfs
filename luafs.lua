@@ -960,38 +960,35 @@ truncate = function(self, path, size, ctime)
         return EINVAL
     end
 
-    -- FIXME:
-    -- restriction of lua? or fuse.c? or.. maybe find out someday why there's a
-    -- weird max and fix it. I want my files to be big! :-)
-    if size >= 2147483647 then
-        return EFBIG
-    end
-
     local m = fs_meta[path]
 
     if size > 0 then
-    
+
+        -- find the blocknr that might need an update
+        local lindx = floor(size/BLOCKSIZE)
+
         -- if the truncate call would make it bigger: just adjust the size, no
         -- point in allready allocating a block
         if size >= m.size then
             m.size = size
+
+        else
+            -- new size would be smaller: update at least 1 block + give all 
+            -- the remainder truncated blocks back to the freelist
+
+            -- free the blocks to the filesystem's freelist!
+            local remainder = list.truncate(m.blockmap, lindx + 1)
+            addtofreelist(m.freelist)
+            addtofreelist(remainder)
+        
         end
 
-        -- new size would be smaller: update at least 1 block + give all the
-        -- remainder truncated blocks back to the freelist
-
-        -- update blockmap
-        local lindx = floor(size/BLOCKSIZE)
-
-        -- free the blocks to the filesystem's freelist!
-        local remainder = list.truncate(m.blockmap, lindx + 1)
-        addtofreelist(m.freelist)
-        addtofreelist(remainder)
-        
+        -- update that lindx block, if it existed: can happen when file grows
+        -- or shrinks because a truncate's size can even be 1 byte
 
         -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
         --        this init mount()), the block was written allready
-        if self and m.blockmap[lindx] then
+        if self and  m.blockmap[lindx] then
             local str = readblock(m.blockmap[lindx])
 
             -- always write as a new block
@@ -1024,11 +1021,13 @@ truncate = function(self, path, size, ctime)
         addtofreelist((rawget(m.blockmap, '_original')).list)
 
         m.freelist = nil
-        m.blockmap = list:new()
-        m.ctime    = ctime
-        m.mtime    = ctime
-        m.size     = 0
+
     end
+
+    m.blockmap = list:new()
+    m.ctime    = ctime
+    m.mtime    = ctime
+    m.size     = size
 
     return 0
 end,
