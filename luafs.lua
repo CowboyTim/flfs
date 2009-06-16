@@ -336,6 +336,7 @@ end
 --
 local function journal_write(...)
     for _, journal_entry in ipairs(arg) do
+
         local journal_meta = journals['current']
         local current_js   = journal_meta.size
         local next_bi      = floor((current_js+#journal_entry)/BLOCKSIZE)
@@ -344,10 +345,23 @@ local function journal_write(...)
               ",next_bi:"..next_bi..
               ",first_free_block:"..first_free_block..
               ",journal_entry_size:"..#journal_entry)
+
+        -- new journal? clear first block too
+        if current_js == 0 then
+            journal_fh:seek('set', BLOCKSIZE * first_free_block)
+            journal_fh:write(empty_block)
+            journal_fh:flush()
+        end
+
+        -- clear next 2 blocks if we're switching block
         if next_bi ~= floor(current_js/BLOCKSIZE) then
+
+            -- journal overloop?
             if first_free_block + next_bi >= journal_meta.freelist[first_free_block] then
+                -- journal wouldn't fit anymore: save the state at the other
+                -- journal space and switch to it
                 -- FIXME: euh, infinite loop when the state also doesn't fit in
-                -- the space preserved...
+                --        the space preserved...
                 serializemeta()
                 return journal_write(unpack(arg))
             end
@@ -355,9 +369,14 @@ local function journal_write(...)
             journal_fh:write(empty_block, empty_block)
             journal_fh:flush()
         end
+
+        -- jump to the journal's size (+ the offset=*which* journal) and write
+        -- journal entry
         journal_fh:seek('set', (BLOCKSIZE * first_free_block) + current_js)
         journal_fh:write(journal_entry)
         journal_fh:flush()
+        
+        -- and adjust new size
         journal_meta.size = current_js + #journal_entry 
     end
     return true 
@@ -972,7 +991,7 @@ truncate = function(self, path, size, ctime)
 
         -- FIXME: dirty hack: self == nil is init fase, during run-fase (pre
         --        this init mount()), the block was written allready
-        if self then
+        if self and m.blockmap[lindx] then
             local str = readblock(m.blockmap[lindx])
 
             -- always write as a new block
