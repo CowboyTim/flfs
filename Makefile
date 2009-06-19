@@ -10,26 +10,20 @@ MYNAME= fuse
 # no need to change anything below here except if your gcc/glibc is not
 # standard
 CFLAGS= $(INCS) $(DEFS) $(WARN) -O2 $G -D_FILE_OFFSET_BITS=64 -D_REENTRANT -DFUSE_USE_VERSION=26 -DHAVE_SETXATTR -fPIC
-#CFLAGS= $(INCS) $(DEFS) $(WARN) -O2 $G -D_FILE_OFFSET_BITS=64 -D_REENTRANT -DFUSE_USE_VERSION=25 
 WARN= #-ansi -pedantic -Wall
 INCS= -I$(LUAINC) -I$(MD5INC)
 LIBS= -lfuse -llua5.1
 
-MYLIB= $(MYNAME)
-T= $(MYLIB).so
-OBJS= $(MYLIB).o
+OBJS = fuse.so
+
 CC=gcc
 
-all:	so
+all:    $(OBJS)
 
-o:	$(MYLIB).o
-
-so:	$T
-
-$T:	$(OBJS) 
-	$(CC) -o $@ -shared $(OBJS) $(LIBS)
+%.so:	%.c
+	$(CC) -o $@ -shared $(CFLAGS) $(WARN) $(LIBS) $<
 	strip $@
 
 clean:
-	rm -f $(OBJS) $T a.out 
+	rm -f $(OBJS)
 
