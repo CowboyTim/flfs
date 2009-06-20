@@ -3,6 +3,7 @@
 local fuse = require 'fuse'
 local lfs  = require 'lfs'
 local list = require 'list'
+local acl  = require 'acl'
 
 local S_WID     = 1 --world
 local S_GID     = 2^3 --group
@@ -1334,6 +1335,11 @@ setxattr = function(self, path, name, val, flags)
     if e then
         e.xattr = e.xattr or {}
         e.xattr[name] = val
+    
+        if name == 'system.posix_acl_access' then
+            print("setxattr(system.posix_acl_access:"..acl.acl_to_text(val))
+            e.mode = acl.acl_equiv_mode(val) or e.mode
+        end
         return 0
     else
         return ENOENT

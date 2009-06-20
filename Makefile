@@ -12,9 +12,9 @@ MYNAME= fuse
 CFLAGS= $(INCS) $(DEFS) $(WARN) -O2 $G -D_FILE_OFFSET_BITS=64 -D_REENTRANT -DFUSE_USE_VERSION=26 -DHAVE_SETXATTR -fPIC
 WARN= #-ansi -pedantic -Wall
 INCS= -I$(LUAINC) -I$(MD5INC)
-LIBS= -lfuse -llua5.1
+LIBS= -lfuse -llua5.1 -lacl
 
-OBJS = fuse.so
+OBJS = fuse.so acl.so
 
 CC=gcc
 
