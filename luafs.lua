@@ -305,22 +305,29 @@ local function freesingleblock(b, meta)
 end
 
 
+local function readdata(start, size)
+    print("readdata():"..start..","..size)
+    assert(journal_fh:seek('set', start))
+    local a = assert(journal_fh:read(size))
+    print("readdata|return:"..#a)
+    return a
+end
+
+
 --
 -- This method reads a block from the block device (or file)
 --
 local function readblock(blocknr)
+    print("readblock():"..tostring(blocknr))
     
     if blocknr ~= nil then
-        assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
-        local a = assert(journal_fh:read(BLOCKSIZE))
-        print("readblock|return:"..#a)
+        local a = readdata(BLOCKSIZE*blocknr, BLOCKSIZE)
         if a and #a then
             return a
         end
     end
     return empty_block
 end
-
 
 --
 -- This method writes a block to the block device (or file)
@@ -349,7 +356,7 @@ local function journal_write(...)
         -- new journal? clear first block too
         if current_js == 0 then
             journal_fh:seek('set', BLOCKSIZE * first_free_block)
-            journal_fh:write(empty_block)
+            journal_fh:write(pad('', BLOCKSIZE, ' '))
             journal_fh:flush()
         end
 
@@ -366,7 +373,7 @@ local function journal_write(...)
                 return journal_write(unpack(arg))
             end
             journal_fh:seek('set', BLOCKSIZE * (first_free_block + next_bi))
-            journal_fh:write(empty_block, empty_block)
+            journal_fh:write(pad('', BLOCKSIZE, ' '), empty_block)
             journal_fh:flush()
         end
 
@@ -497,7 +504,7 @@ local function serializemeta()
         end
     end
 
-    say("making a new state:done")
+    say("making a new state:done,size:"..journals['current'].size)
     say("switching state to 'other'")
     journals['current'], journals['other'] = journals['other'], journals['current']
     journals['current'].size = 0
@@ -788,26 +795,74 @@ end,
 read = function(self, path, size, offset, obj)
     local msize = offset + size
     if msize > fs_meta[path].size then
-        local fsize  = fs_meta[path].size
+        local fsize = fs_meta[path].size
         if offset >= fsize then
             return 0, ''
         end
-        size = fsize - BLOCKSIZE * floor(fsize/BLOCKSIZE)
+        size  = fsize - offset
+        msize = offset + size
     end
-    --print("findx:"..findx..",lindx:"..lindx)
-    --
+ 
     local map    = fs_meta[path].blockmap
     local findx  = floor(offset/BLOCKSIZE)
-    local lindx  = floor(msize/BLOCKSIZE) - 1
-    if findx == lindx then
-        local b = readblock(map[findx]) 
-        return 0, substr(b,offset % BLOCKSIZE,offset%BLOCKSIZE+size)
+    local lindx  = floor(msize/BLOCKSIZE)
+
+    local offset_block = offset%BLOCKSIZE
+
+    print("findx:"..findx..",lindx:"..lindx)
+    if msize%BLOCKSIZE == 0 then
+        -- we don't need/want that last block
+        lindx = lindx - 1
     end
+
     local str = {}
-    for i=findx,lindx-1 do
-        push(str, readblock(map[i]))
+
+    local first_bn, last_bn
+    for i=findx,lindx do 
+        print("asking for:"..i)
+        local next_bn = map[i]
+        if next_bn and ((last_bn and (last_bn + 1 == next_bn)) or not last_bn) then
+            print("exists")
+            last_bn = next_bn
+            if not first_bn then
+                first_bn = next_bn
+            end
+        else
+            if first_bn then
+                print("readdata in loop, next_bn:"..tostring(next_bn))
+                local start_block = first_bn*BLOCKSIZE
+                push(str, readdata(
+                    start_block, BLOCKSIZE + last_bn * BLOCKSIZE - start_block
+                ))
+            end
+            first_bn, last_bn = nil, nil
+            if not next_bn then
+                push(str, empty_block)
+            else
+                last_bn = next_bn
+                if not first_bn then
+                    first_bn = next_bn
+                end
+            end
+        end
     end
-    push(str, substr(readblock(map[lindx]),0,offset%BLOCKSIZE+size))
+    if first_bn then
+        local start_block = first_bn*BLOCKSIZE
+        push(str, readdata(
+            start_block, BLOCKSIZE + last_bn * BLOCKSIZE - start_block
+        ))
+    end
+
+    if offset_block ~= 0 then
+        print("offset not on boundary:"..offset_block)
+        str[1] = substr(str[1],offset_block)
+    end
+
+    if msize  % BLOCKSIZE ~= 0 then
+        print("offset+msize not on boundary:"..msize)
+        local s = (msize%BLOCKSIZE) + (#(str[#str])/BLOCKSIZE - 1)*BLOCKSIZE
+        str[#str] = substr(str[#str],0,s)
+    end
     return 0, join(str)
 end,
 
@@ -1273,6 +1328,7 @@ end,
 
 destroy = function(self, return_value_from_init)
     serializemeta()
+    journal_fh:flush()
     journal_fh:close()
     return 0
 end,
