@@ -878,8 +878,8 @@ static xmp_main(lua_State *L)
 
 static int xmp_get_context(lua_State *L)
 {
-	struct fuse_context *fc;
-	fc = fuse_get_context();
+    struct fuse_context *fc;
+    fc = fuse_get_context();
     lua_pushnumber(L, fc->uid);
     lua_pushnumber(L, fc->gid);
     lua_pushnumber(L, fc->pid);
@@ -890,24 +890,24 @@ static int xmp_get_context(lua_State *L)
 }
 
 static const luaL_reg Rm[] = {
-	{ "main"    , xmp_main        } , 
-	{ "context" , xmp_get_context } , 
-	{ NULL      , NULL	          }
+    { "main"    , xmp_main        } , 
+    { "context" , xmp_get_context } , 
+    { NULL      , NULL            }
 };
 
 LUA_API int luaopen_fuse(lua_State *L)
 {
-	luaL_openlib( L, "fuse", Rm, 0 );
+    luaL_openlib( L, "fuse", Rm, 0 );
 
-	lua_pushliteral (L, "_COPYRIGHT");
-	lua_pushliteral (L, "Copyright (C) 2007 gary ng <linux@garyng.com>");
-	lua_settable (L, -3);
-	lua_pushliteral (L, "_DESCRIPTION");
-	lua_pushliteral (L, "Binding to linux fuse file system");
-	lua_settable (L, -3);
-	lua_pushliteral (L, "_VERSION");
-	lua_pushliteral (L, "LuaFuse 0.1");
-	lua_settable (L, -3);
+    lua_pushliteral (L, "_COPYRIGHT");
+    lua_pushliteral (L, "Copyright (C) 2007 gary ng <linux@garyng.com>");
+    lua_settable (L, -3);
+    lua_pushliteral (L, "_DESCRIPTION");
+    lua_pushliteral (L, "Binding to linux fuse file system");
+    lua_settable (L, -3);
+    lua_pushliteral (L, "_VERSION");
+    lua_pushliteral (L, "LuaFuse 0.1");
+    lua_settable (L, -3);
 
     pthread_rwlock_init(&vm_lock, NULL);
     return 1;
