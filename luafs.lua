@@ -29,6 +29,7 @@
 local fuse = require 'fuse'
 local lfs  = require 'lfs'
 local list = require 'list'
+local fl   = require 'freelist'
 
 local S_WID     = 1 --world
 local S_GID     = 2^3 --group
@@ -59,8 +60,8 @@ local ENOTEMPTY    = -39
 local ENOATTR      = -516
 local ENOTSUPP     = -524
 
-local BLOCKSIZE    = 4096
-local STRIDE       = 1
+local BLOCKSIZE    = 4096      -- in bytes
+local STRIDE       = 1         -- 128 kb
 local MAXINT       = 2^32 -1
 
 --
@@ -195,8 +196,7 @@ local empty_block = pad('', BLOCKSIZE, '\000')
 --
 
 fs_meta        = {}
-freelist       = {}
-freelist_index = {}
+freelist       = fl:new({})
 
 local fs_meta              = fs_meta
 fs_meta["/"]               = new_meta(mk_mode(7,5,5) + S_IFDIR, uid, gid, time())
@@ -213,11 +213,24 @@ local journal_fh
 --
 local m = floor(block_nr/2)
 journals = {
-    current = {freelist={[0] = m - 1},        size=0},
-    other   = {freelist={[m] = block_nr - 1}, size=0}
+    current = {freelist=fl:new{[0] = m - 1},       size=0},
+    other   = {freelist=fl:new{[m] = block_nr - 1},size=0}
 }
 local journals = journals
 
+local function getfreestride(stride_size)
+    local next_free_stride = freelist:getnextstride(stride_size)
+    if not next_free_stride then 
+        -- watermark shift
+        next_free_stride = block_nr
+        block_nr = block_nr + stride_size
+        if block_nr >= max_block_nr then
+            block_nr = block_nr - stride_size
+            error({code=1, message="Disk Full"})
+        end
+    else
+    return next_free_stride
+end
 
 --
 -- This function finds a new free block, with a preferred stride size. It goes
@@ -229,95 +242,24 @@ local journals = journals
 -- available anymore
 --
 local function getnextfreeblocknr(meta, stride_wanted)
-    local bfree = meta.freelist
-    if not bfree then
-        meta.freelist = {}
-        bfree = meta.freelist
+    if not meta.freelist then
+        meta.freelist = fl:new({})
     end
-    local nextfreeblock = next(bfree)
-    if not nextfreeblock then 
-        if #freelist_index > 0 then
-            next_free_stride = freelist_index[1]
-            print('getnextfreeblocknr:'..next_free_stride..
-                  ',size:'..freelist[next_free_stride])
-            if freelist[next_free_stride] - next_free_stride >= stride_wanted then
-                freelist[next_free_stride + stride_wanted] = freelist[next_free_stride]
-                freelist_index[1] = next_free_stride + stride_wanted
-            else 
-                print('getnextfreeblocknr:setting to nil:'..next_free_stride)
-                shift(freelist_index)
-            end
-            freelist[next_free_stride] = nil
-            blocks_in_freelist = blocks_in_freelist - stride_wanted
-        else
-            -- watermark shift
-            next_free_stride = block_nr
-            block_nr = block_nr + stride_wanted
-            if block_nr >= max_block_nr then
-                block_nr = block_nr - stride_wanted
-                error({code=1, message="Disk Full"})
-            end
-        end
-        nextfreeblock = next_free_stride
-        if stride_wanted > 1 then
-            bfree[nextfreeblock + 1] = nextfreeblock + stride_wanted - 1
-        end
-    else
-        print("from file freelist:"..nextfreeblock..',bfree[nextfreeblock]:'..bfree[nextfreeblock])
-        if     bfree[nextfreeblock] ~= nextfreeblock 
-           and not bfree[nextfreeblock+1]
-           and nextfreeblock < stride_wanted*floor(nextfreeblock/stride_wanted) + stride_wanted then
-            bfree[nextfreeblock+1] = bfree[nextfreeblock]
-        end
-        bfree[nextfreeblock]   = nil
+    local nextfreeblock = meta.freelist:getnextstride(1)
+    if not nextfreeblock then
+        local start = getfreestride(stride_wanted)
+        meta.freelist:add({[start]=start+stride_wanted})
+        nextfreeblock = meta.freelist:getnextstride(1)
     end
     return nextfreeblock
 end
-
-
---
--- This method is used when the filesystem state needs to be serialized: we
--- sort the freelist + collapse the adjacent blocks into longer block strides
--- as much as possible
---
-local function _canonicalize_freelist()
-    freelist_index = {}
-    local last
-    for i,v in pairsByKeys(freelist) do
-        if not last then
-            last = i
-            push(freelist_index, last)
-        else
-            if i == freelist[last] + 1 then
-                freelist[last] = freelist[i]
-                freelist[i]    = nil
-            else
-                last = i
-                push(freelist_index, last)
-            end
-        end
-    end
-    return
-end
-
 
 --
 -- This method add the blocks in the argument (typically from a file) to the
 -- freelist again
 --
 local function addtofreelist(blocklist)
-    if not blocklist then 
-        return  
-    end
-    for i,b in pairs(blocklist) do
-        print("addtofreelist:i:"..i..",b:"..b)
-        freelist[i] = b
-        blocks_in_freelist = blocks_in_freelist + b - i + 1
-        push(freelist_index, i)
-    end
-    -- FIXME: bad idea, implement a better one
-    --luafs._canonicalize_freelist(self)
-    return
+    return freelist:add(blocklist)
 end
 
 
@@ -328,7 +270,11 @@ end
 -- freelist of the file itself
 --
 local function freesingleblock(b, meta)
-    meta.freelist[b] = b
+    if not meta.freelist then
+        meta.freelist = fl:new({[b]=b})
+    else
+        meta.freelist:add({[b]=b})
+    end
     return
 end
 
@@ -446,13 +392,7 @@ local function serializemeta()
                   ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
 
     -- write the freelist
-    _canonicalize_freelist()
-    local fl = {}
-    for i, v in pairs(freelist) do
-        push(fl, '['..i..']='..v)
-    end
-    journal_write('freelist = {', join(fl, ','), '}\n')
-    journal_write('freelist_index = {', join(freelist_index, ','), '}\n')
+    journal_write('freelist = {', fl:tostring(), '}\n')
 
     local listtostring = list.tostring
 
@@ -1468,7 +1408,7 @@ local default_fuse_options = {
     '-onegative_timeout=0',
     '-oattr_timeout=0',
     '-ouse_ino',
-    --'-odirect_io',
+    '-odirect_io',
     '-oreaddir_ino',
     '-omax_read=131072',
     '-omax_readahead=131072',
