@@ -293,7 +293,8 @@ local function journal_write(...)
         local journal_meta = journals['current']
         local current_js   = journal_meta.size
         local next_bi      = floor((current_js+#journal_entry)/BLOCKSIZE)
-        local first_free_block = next(journal_meta.freelist)
+        local jfreelist    = journal_meta.freelist.freelist
+        local first_free_block = next(jfreelist)
         print("journal_write:current_js:"..current_js..
               ",next_bi:"..next_bi..
               ",first_free_block:"..first_free_block..
@@ -310,7 +311,7 @@ local function journal_write(...)
         if next_bi ~= floor(current_js/BLOCKSIZE) then
 
             -- journal overloop?
-            if first_free_block + next_bi >= journal_meta.freelist[first_free_block] then
+            if first_free_block + next_bi >= jfreelist[first_free_block] then
                 -- journal wouldn't fit anymore: save the state at the other
                 -- journal space and switch to it
                 -- FIXME: euh, infinite loop when the state also doesn't fit in
@@ -361,7 +362,7 @@ local function serializemeta()
                   ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
 
     -- write the freelist
-    journal_write('freelist = {', fl:tostring(), '}\n')
+    journal_write('freelist = {', freelist:tostring(), '}\n')
 
     local listtostring = list.tostring
 
