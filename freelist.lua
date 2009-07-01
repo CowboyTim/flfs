@@ -24,7 +24,7 @@ end
 
 function P:tostring()
     local t = {}
-    push(t, 'freelist:new{freelist={')
+    push(t, 'thaw{freelist={')
     for i, v in pairs(self.freelist) do
         push(t, '['..i..']='..v..',')
     end
@@ -38,14 +38,26 @@ function P:tostring()
     return join(t, '')
 end
 
+function P:thaw(freelist, stridemap, stridesizeindex)
+    local o = {}
+    setmetatable(o, self)
+    self.__index = self
+
+    o.freelist        = freelist        or {}
+    o.stridemap       = stridemap       or {}
+    o.stridesizeindex = stridesizeindex or {}
+
+    return o
+end
+
 function P:new(blocklist)
     local o = {}
     setmetatable(o, self)
     self.__index = self
 
-    self.freelist        = {}
-    self.stridemap       = {}
-    self.stridesizeindex = {}
+    o.freelist        = {}
+    o.stridemap       = {}
+    o.stridesizeindex = {}
 
     o:add(blocklist)
 

@@ -3,7 +3,9 @@
 local fuse = require 'fuse'
 local lfs  = require 'lfs'
 local list = require 'list'
-local fl   = require 'freelist'
+fl   = require 'freelist'
+
+local fl = fl
 
 local S_WID     = 1 --world
 local S_GID     = 2^3 --group
@@ -185,8 +187,8 @@ local journal_fh
 -- both even, we just switch between the two sections.
 local m = floor(block_nr/2)
 journals = {
-    current = {freelist=fl:new{[0] = m - 1},       size=0},
-    other   = {freelist=fl:new{[m] = block_nr - 1},size=0}
+    current = {freelist={[0] = m - 1},        size=0},
+    other   = {freelist={[m] = block_nr - 1}, size=0}
 }
 local journals = journals
 
@@ -200,7 +202,7 @@ local function getfreestride(stride_size)
             block_nr = block_nr - stride_size
             error({code=1, message="Disk Full"})
         end
-    else
+    end
     return next_free_stride
 end
 
@@ -220,7 +222,7 @@ local function getnextfreeblocknr(meta, stride_wanted)
     local nextfreeblock = meta.freelist:getnextstride(1)
     if not nextfreeblock then
         local start = getfreestride(stride_wanted)
-        meta.freelist:add({[start]=start+stride_wanted})
+        meta.freelist:add({[start]=start+stride_wanted-1})
         nextfreeblock = meta.freelist:getnextstride(1)
     end
     return nextfreeblock
@@ -293,7 +295,7 @@ local function journal_write(...)
         local journal_meta = journals['current']
         local current_js   = journal_meta.size
         local next_bi      = floor((current_js+#journal_entry)/BLOCKSIZE)
-        local jfreelist    = journal_meta.freelist.freelist
+        local jfreelist    = journal_meta.freelist
         local first_free_block = next(jfreelist)
         print("journal_write:current_js:"..current_js..
               ",next_bi:"..next_bi..
@@ -303,7 +305,7 @@ local function journal_write(...)
         -- new journal? clear first block too
         if current_js == 0 then
             journal_fh:seek('set', BLOCKSIZE * first_free_block)
-            journal_fh:write(pad('', BLOCKSIZE, ' '))
+            journal_fh:write(pad('', 2*BLOCKSIZE, ' '))
             journal_fh:flush()
         end
 
@@ -362,7 +364,7 @@ local function serializemeta()
                   ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
 
     -- write the freelist
-    journal_write('freelist = {', freelist:tostring(), '}\n')
+    journal_write('freelist=fl:', freelist:tostring(), '\n')
 
     local listtostring = list.tostring
 
@@ -422,14 +424,8 @@ local function serializemeta()
             elseif e.blockmap then
 
                 -- dump the freelist
-                if e.freelist and next(e.freelist) then
-                    fl = {}
-                    for i, v in pairs(e.freelist) do
-                        push(fl, '['..i..']='..v)
-                    end
-                    journal_write(',freelist={',
-                        join(fl, ','),
-                    '}')
+                if e.freelist and #(e.freelist.stridesizeindex) ~= 0 then
+                    journal_write(',freelist=fl:',e.freelist:tostring())
                 end
 
                 -- dump the blockmap
@@ -452,9 +448,8 @@ local function serializemeta()
     local init_journal = [[
         local journals = _G.journals
         journals['current'], journals['other'] = journals['other'], journals['current']
-
     ]]
-    journal_write(pad(init_journal, BLOCKSIZE, ' '))
+    journal_write(pad(init_journal, 2*BLOCKSIZE, ' '))
     journals['current'], journals['other'] = journals['other'], journals['current']
     
 
@@ -527,6 +522,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             return [[
                 local chunk_function
                 local fs_meta = _G.fs_meta
+                local fl      = _G.fl
             ]]
         end
         local nstr = journal_fh:read(BLOCKSIZE)
