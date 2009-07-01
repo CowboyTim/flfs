@@ -323,7 +323,7 @@ local function journal_write(...)
         local journal_meta = journals['current']
         local current_js   = journal_meta.size
         local next_bi      = floor((current_js+#journal_entry)/BLOCKSIZE)
-        local jfreelist    = journal_meta.freelist
+        local jfreelist    = journal_meta.freelist.freelist
         local first_free_block = next(jfreelist)
         print("journal_write:current_js:"..current_js..
               ",next_bi:"..next_bi..
@@ -392,7 +392,7 @@ local function serializemeta()
                   ..block_nr..','..inode_start..','..blocks_in_freelist..'\n')
 
     -- write the freelist
-    journal_write('freelist = {', fl:tostring(), '}\n')
+    journal_write('freelist = {', freelist:tostring(), '}\n')
 
     local listtostring = list.tostring
 
