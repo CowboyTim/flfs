@@ -305,7 +305,7 @@ local function journal_write(...)
         -- new journal? clear first block too
         if current_js == 0 then
             journal_fh:seek('set', BLOCKSIZE * first_free_block)
-            journal_fh:write(pad('', 2*BLOCKSIZE, ' '))
+            journal_fh:write(pad('', BLOCKSIZE, '\000'))
             journal_fh:flush()
         end
 
@@ -322,7 +322,7 @@ local function journal_write(...)
                 return journal_write(unpack(arg))
             end
             journal_fh:seek('set', BLOCKSIZE * (first_free_block + next_bi))
-            journal_fh:write(pad('', BLOCKSIZE, ' '), empty_block)
+            journal_fh:write(pad('', BLOCKSIZE, '\000'), empty_block)
             journal_fh:flush()
         end
 
@@ -448,8 +448,9 @@ local function serializemeta()
     local init_journal = [[
         local journals = _G.journals
         journals['current'], journals['other'] = journals['other'], journals['current']
+
     ]]
-    journal_write(pad(init_journal, 2*BLOCKSIZE, ' '))
+    journal_write(pad(init_journal, BLOCKSIZE, ' '))
     journals['current'], journals['other'] = journals['other'], journals['current']
     
 
@@ -556,12 +557,12 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
         end
         return nil
     end)
-    if not journal_f then
-        error(err)
-    end
-    local status, err = pcall(journal_f)
-    if not status then
-        print("was error:"..err)
+    if journal_f then
+        local status, err = pcall(journal_f)
+        if not status then
+            print("was error:"..err)
+        end
+    else
         error(err)
     end
     journals['current'].size = journal_size 
@@ -970,7 +971,9 @@ truncate = function(self, path, size, ctime)
 
             -- free the blocks to the filesystem's freelist!
             local remainder = list.truncate(m.blockmap, lindx + 1)
-            addtofreelist(m.freelist)
+            if m.freelist then
+                addtofreelist(m.freelist:getfreelist())
+            end
             addtofreelist(remainder)
         
         end
@@ -1009,13 +1012,15 @@ truncate = function(self, path, size, ctime)
     else 
 
         -- free the blocks: just add to the filesystem's freelist
-        addtofreelist(m.freelist)
+        if m.freelist then
+            addtofreelist(m.freelist:getfreelist())
+        end
         addtofreelist((rawget(m.blockmap, '_original')).list)
 
-        m.freelist = nil
 
     end
-
+    
+    m.freelist = fl:new()
     m.blockmap = list:new()
     m.ctime    = ctime
     m.mtime    = ctime
@@ -1162,7 +1167,7 @@ _unlink = function(self, path, ctime)
 
     if entity.nlink == 0 then
         if entity.freelist then
-            addtofreelist(entity.freelist)
+            addtofreelist(entity.freelist:getfreelist())
         end
         if entity.blockmap then
             addtofreelist((rawget(entity.blockmap, '_original')).list)
@@ -1374,7 +1379,7 @@ local default_fuse_options = {
     '-onegative_timeout=0',
     '-oattr_timeout=0',
     '-ouse_ino',
-    '-odirect_io',
+    --'-odirect_io',
     '-oreaddir_ino',
     '-omax_read=131072',
     '-omax_readahead=131072',

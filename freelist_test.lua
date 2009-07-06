@@ -79,4 +79,8 @@ function test_ww ()
     assert_equal(nil, s)
     print(a:tostring())
 
+    local n = freelist:new()
+    n:add({[55555]=66666666})
+    print(n:tostring())
+
 end
