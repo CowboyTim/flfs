@@ -26,6 +26,7 @@ function P:tostring()
     local t = {}
     push(t, 'thaw{freelist={')
     for i, v in pairs(self.freelist) do
+        print("i:"..i)
         push(t, '['..i..']='..v..',')
     end
     push(t, '},stridemap={')
@@ -38,15 +39,9 @@ function P:tostring()
     return join(t, '')
 end
 
-function P:thaw(freelist, stridemap, stridesizeindex)
-    local o = {}
+function P:thaw(o)
     setmetatable(o, self)
     self.__index = self
-
-    o.freelist        = freelist        or {}
-    o.stridemap       = stridemap       or {}
-    o.stridesizeindex = stridesizeindex or {}
-
     return o
 end
 
@@ -64,13 +59,17 @@ function P:new(blocklist)
     return o
 end
 
+function P:getfreelist()
+    return self.freelist
+end
+
 function P:add(blocklist)
-    if not blocklist then 
+    if not blocklist or not next(blocklist) then 
         return  
     end
     local freelist = self.freelist
     for i,b in pairs(blocklist) do
-        print("addtofreelist:i:"..i..",b:"..b)
+        print("addtofreelist:i:"..i..",b:"..tostring(b))
         freelist[i] = b
     end
 
@@ -80,7 +79,7 @@ function P:add(blocklist)
     -- as the freelist is allready sorted (or can be kept sorted with a
     -- seperate index, we can intelligently merge the new blocklist. This will
     -- be a lot faster than the full re-sort.
-    self:canonicalize_freelist(freelist)
+    self:canonicalize_freelist()
 
     return
 end
@@ -129,13 +128,17 @@ function P:getnextstride(stride)
     return nil
 end
 
-function P:canonicalize_freelist(freelist)
+function P:canonicalize_freelist()
+    print("canonicalize_freelist called")
+    
+    local freelist = self.freelist
 
     -- find the stridemap: sort freelist to find the grouping per size of free
     -- strides
     local stridemap = {}
     local last
     for i,v in pairsByKeys(freelist) do
+        print("i:"..i..",v:"..tostring(v))
         if not last then
             last = i
         else
@@ -172,6 +175,7 @@ function P:canonicalize_freelist(freelist)
     end
     self.stridemap       = stridemap
     self.stridesizeindex = stridesizeindex
+    print("canonicalize_freelist ended")
 end
 
 local freelist
