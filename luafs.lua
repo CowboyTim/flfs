@@ -998,7 +998,7 @@ _setblock = function(self, path, i, bnr, size, ctime)
 end,
 
 release = function(self, path, obj)
-    obj.f = nil
+    if obj then obj.f = nil end
     return 0
 end,
 
