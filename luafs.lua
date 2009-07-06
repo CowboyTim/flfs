@@ -684,14 +684,17 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
                 end
             end
 
-            -- ....and save it to the journal
+            -- really call the function, save the return
+            local r = fusemethod(self, unpack(arg))
+
+            -- save it to the journal...
             local journal_entry = prefix..join(o,",")..")\n"
             if not journal_write(journal_entry) then
                 return ENOSPC
             end
 
-            -- really call the function
-            return fusemethod(self, unpack(arg))
+            -- and return
+            return r
         end
     end
 
