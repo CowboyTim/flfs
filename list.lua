@@ -17,8 +17,8 @@ function P:tostring()
         push(l, '['..b..']='..bl.list[b])
     end
     local k = {}
-    push(k, 'list={'..join(l, ',')..'}')
-    push(k, 'map={'..join(t, ',')..'}')
+    push(k, '["list"]={'..join(l, ',')..'}')
+    push(k, '["map"]={'..join(t, ',')..'}')
     return join(k, ',')
 end
 
@@ -58,6 +58,20 @@ function P:new(data)
     }
     setmetatable(bl, mt)
     return bl
+end
+
+function P:merge(blocklist)
+    local thisbl    = rawget(self,      '_original')
+    local otherbl   = rawget(blocklist, '_original')
+    for _,i in ipairs(otherbl.indx) do
+        local m = otherbl[i]
+        --print("i:"..tostring(i)..",m:"..m..",l:"..otherbl.list[m])
+        thisbl[i]      = m
+        thisbl.list[m] = otherbl.list[m]
+        push(thisbl.indx, i)
+    end
+    P._canonicalize(thisbl)
+    return self
 end
 
 function P:truncate(v)
@@ -310,15 +324,15 @@ function P:_canonicalize()
     if #index <= 1 then
         return
     end
-    local list  = self.list
+    local list = self.list
 
     local newindex = {}
     sort(index)
     push(newindex, index[1])
     local l = 1
     for i=2,#index do
-        --print("iaaaaaaaaaaaaaaaaaaaaaaa:"..i)
         local previous_index       = index[l]
+        --print("previous_index:"..tostring(previous_index)..",l:"..l)
         local previous_block       = list[self[previous_index]]
         local current_index        = index[i]
         local current_block_start  = self[index[i]]

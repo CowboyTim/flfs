@@ -319,3 +319,31 @@ oldprint(list.tostring(p))
 r = list.truncate(p, 0)
 printHash(r)
 oldprint(list.tostring(p))
+
+local tbl1 = {
+    list={[55]=121, [131]=131,  [33]=33, [667]=667,  [800]=800, [710]=711},   
+    map ={[0]=55, [76]=131, [77]=33, [78]=667, [100]=800, [121]=710}
+}
+local tbl2 = {
+    list={[556777]=556777, [6666777]=6666888},   
+    map ={[200]=556777, [205]=6666777}
+}
+tbl1 = list:new(tbl1)
+tbl2 = list:new(tbl2)
+list.merge(tbl1, tbl2)
+oldprint(list.tostring(tbl1))
+list.merge(tbl1,list:new{
+    list={[6666889]=6666889},   
+    map ={[317]=6666889}
+})
+oldprint(list.tostring(tbl1))
+list.merge(tbl1,list:new{
+    list={[6666891]=6666892},   
+    map ={[319]=6666891}
+})
+oldprint(list.tostring(tbl1))
+list.merge(tbl1,list:new{
+    list={[6666890]=6666890},   
+    map ={[318]=6666890}
+})
+oldprint(list.tostring(tbl1))
