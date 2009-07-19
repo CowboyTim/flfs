@@ -58,6 +58,8 @@ function pairsByKeys (t, f)
   return iter
 end
 
+oldprint = print
+
 require 'list'
 
 local n = { 
@@ -162,7 +164,6 @@ tbl[201] = 556562562
 print(tbl[201])
 print('toobig:'..tostring(tbl[202]))
 
-oldprint = print
 --print = function () end
 --
 local tbl1 = list:new()
@@ -273,7 +274,7 @@ end
 print(list.tostring(n))
 print("start:rewrite")
 
-for k=1,3000 do
+for k=1,3 do
 oldprint("doing k:"..k)
 for i=0,3000 do
     n[i] = k*3000 +i+k
@@ -347,3 +348,7 @@ list.merge(tbl1,list:new{
     map ={[318]=6666890}
 })
 oldprint(list.tostring(tbl1))
+
+local r = list.truncate(tbl1, 10, 77)
+oldprint(list.tostring(tbl1))
+oldprint(printHash(r))
