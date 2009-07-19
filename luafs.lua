@@ -261,7 +261,10 @@ end
 -- freelist again
 --
 local function addtofreelist(blocklist)
-    return freelist:add(blocklist)
+    if blocklist then
+        return freelist:add(blocklist)
+    end
+    return nil
 end
 
 
@@ -459,9 +462,9 @@ local function serializemeta()
                 end
 
                 -- dump the blockmap
-                journal_write(',blockmap=list:new{',
+                journal_write(',blockmap=',
                     listtostring(e.blockmap),
-                '}}\n')
+                '}\n')
 
             else
 
@@ -483,13 +486,10 @@ local function serializemeta()
     journal_write(pad(init_journal, BLOCKSIZE, ' '))
     journals['current'], journals['other'] = journals['other'], journals['current']
     
-
     return 0
 end
 
 _G.serializemeta = serializemeta
-
-
 
 --
 -- FUSE methods (object)
@@ -554,6 +554,7 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
                 local chunk_function
                 local fs_meta = _G.fs_meta
                 local fl      = _G.fl
+                local list    = _G.list
             ]]
         end
         local nstr = journal_fh:read(BLOCKSIZE)
@@ -649,6 +650,8 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             for i,w in ipairs(arg) do
                 if type(arg[i]) == "string" then
                     arg[i] = format("%q", arg[i])
+                elseif type(arg[i]) == "table" and k == '_setblock' then
+                    arg[i] = list.tostring(arg[i])
                 end
             end
 
@@ -840,22 +843,29 @@ write = function(self, path, buf, offset, obj)
     -- are.. we don't want to rewrite on journal traversal, we just want to set
     -- the blocks again
 
-    local entity = fs_meta[path]
-    local data   = {}
-    local map    = entity.blockmap
-    local findx  = floor(offset/BLOCKSIZE)
+    local entity     = fs_meta[path]
+    local data       = {}
     local sorteddata = {} 
+    local map        = entity.blockmap
+    local findx      = floor(offset/BLOCKSIZE)
+    local newsize    = offset + #buf
+    local size       = entity.size > newsize and entity.size or newsize
+
+    -- determine stride: how many blocks does this write() need
+    local stride     = floor(#buf/BLOCKSIZE)
+    stride = stride == 0 and 1 or stride
+    print("stride:"..stride)
 
     -- BLOCKSIZE matches ours + offset falls on the start: just assign
     if offset % BLOCKSIZE == 0 and #buf == BLOCKSIZE then
         print("blocksize matches and offset falls on boundary:"..findx)
 		
 		-- no need to read in block, it will be written entirely anyway
-        data[findx]  = buf
+        data[findx] = buf
         push(sorteddata,findx)
 
     else
-        local lindx = floor((offset + #buf - 1)/BLOCKSIZE)
+        local lindx = floor((newsize - 1)/BLOCKSIZE)
 
         print("findx:"..findx..",lindx:"..lindx)
 
@@ -897,10 +907,11 @@ write = function(self, path, buf, offset, obj)
     end
 
     -- rewrite all blocks to disk
+    local nb = list:new()
     for _, blockdata_i in ipairs(sorteddata) do
 
         -- find a new block that's free
-        local ok, new_block_nr = pcall(getnextfreeblocknr, entity, STRIDE)
+        local ok, new_block_nr = pcall(getnextfreeblocknr, entity, stride)
         if not ok then
             obj.errorcode = ENOSPC
             return ENOSPC
@@ -910,53 +921,38 @@ write = function(self, path, buf, offset, obj)
         writeblock(path, new_block_nr, data[blockdata_i])
 
         -- save the blocknr for the journal
-        data[blockdata_i] = new_block_nr
+        nb[blockdata_i] = new_block_nr
     end
     
     -- adjust the metadata in the journal, we piggyback the new size in this
     -- call. This way, when traversing the journal, we can set the size correct
-    local size = entity.size > (offset + #buf) and entity.size or (offset + #buf)
-    for _, blockdata_i in ipairs(sorteddata) do
-        self:_setblock(path, blockdata_i, data[blockdata_i], size)
-    end
+    self:_setblock(path, size, nb, stride)
 
     return #buf
 end,
 
-_setblock = function(self, path, i, bnr, size, ctime)
+_setblock = function(self, path, size, newblockmap, stride, ctime)
+    print("_setblock():blockmap:"..list.tostring(newblockmap))
 
     -- a call to this function will also write a meta journal entry, write() is
     -- *NOT* journaled, these calls are instead, so that the writing of data is
     -- always strict
 
-    local e = fs_meta[path]
+    local entity = fs_meta[path]
 
-    -- FIXME: hack ahead: when traversing the journal, self is nil. So we
-    -- pretent to requested a block here, just like it is done in write()
-    -- itself. The returned block should be the same as bnr here I think.
     if not self then
-        local dummy = getnextfreeblocknr(e, STRIDE)
-        if dummy ~= bnr then
-            error("Internal error: bnr~=dummy: bnr:"..
-                    bnr..",getnextfreeblocknr():"..dummy)
-        end
-        if bnr > block_nr then
-            block_nr = bnr
-        end
+        -- FIXME: freelist blockmap subtract with the gotten newblockmap for
+        --        journal traversal in case the state save wasn't successfull
     end
 
-    -- free the previous block
-    if e.blockmap[i] then
-        freesingleblock(e.blockmap[i], e)
-    end
-    
-    -- reset that block with the new one
-    e.blockmap[i] = bnr
+    -- set new blocklist, return the old one and add it back to the freelist
+    local part = list.replacepart(entity.blockmap, newblockmap)
+    addtofreelist(part)
 
     -- adjust meta data
-    e.size        = size
-    e.ctime       = ctime
-    e.mtime       = ctime
+    entity.size  = size
+    entity.ctime = ctime
+    entity.mtime = ctime
 
     return 0
 end,
@@ -1037,7 +1033,7 @@ truncate = function(self, path, size, ctime)
             -- This is because I don't want to have no truncate(): then I would
             -- need _setblock() for all null-ed blocks.
             --
-            self:_setblock(path, lindx, new_block_nr, size)
+            self:_setblock(path, size, list:new({[lindx]=new_block_nr}, STRIDE))
         end
     else 
 

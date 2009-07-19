@@ -26,7 +26,6 @@ function P:tostring()
     local t = {}
     push(t, 'thaw{freelist={')
     for i, v in pairs(self.freelist) do
-        print("i:"..i)
         push(t, '['..i..']='..v..',')
     end
     push(t, '},stridemap={')
