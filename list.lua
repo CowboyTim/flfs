@@ -17,9 +17,9 @@ function P:tostring()
         push(l, '['..b..']='..bl.list[b])
     end
     local k = {}
-    push(k, '["list"]={'..join(l, ',')..'}')
-    push(k, '["map"]={'..join(t, ',')..'}')
-    return join(k, ',')
+    push(k, 'list={'..join(l, ',')..'}')
+    push(k, 'map={'..join(t, ',')..'}')
+    return 'list:new{'..join(k, ',')..'}'
 end
 
 function P:new(data)
@@ -61,6 +61,7 @@ function P:new(data)
 end
 
 function P:merge(blocklist)
+    --print("merge()")
     local thisbl    = rawget(self,      '_original')
     local otherbl   = rawget(blocklist, '_original')
     for _,i in ipairs(otherbl.indx) do
@@ -70,18 +71,61 @@ function P:merge(blocklist)
         thisbl.list[m] = otherbl.list[m]
         push(thisbl.indx, i)
     end
-    P._canonicalize(thisbl)
     return self
 end
 
-function P:truncate(v)
+function P:replacepart(blocklist)
+    local thisbl  = rawget(self,      '_original')
+    local otherbl = rawget(blocklist, '_original')
+
+    -- self is empty?
+    local index = thisbl.indx
+    if #index == 0 then
+        P.merge(self, blocklist)
+        return nil
+    end
+
+    -- start of the replacement
+    local otherindx = otherbl.indx
+    local si = otherindx[1]
+
+    -- end of the replacement
+    local li = otherindx[#(otherindx)]
+    li = li + (otherbl.list[otherbl[li]] - otherbl[li])
+    --print("si:"..tostring(si)..",li:"..tostring(li)..",otherbl[si]:"..P.tostring(blocklist))
+
+    -- fast bail out for 1 sized
+    if li == si then
+        local b = P.insert(thisbl, si, otherbl[si])
+        if b then
+            return {[b]=b}
+        end
+        return nil
+    end
+
+    -- too big request? -> just merge and return nil
+    local list = thisbl.list
+    local last_index       = index[#index]
+    local last_start_block = self[index[#index]]
+    if si > last_index + list[last_start_block] - last_start_block then
+        P.merge(self, blocklist)
+        return nil
+    end 
+
+    -- complex: subtract (and return it) + merge
+    local result = P.truncate(self, si, li)
+    P.merge(self, blocklist)
+    P._canonicalize(thisbl)
+    return result
+end
+
+function P:truncate(v, e)
     local bl    = rawget(self, '_original')
     local index = bl.indx
     local list  = bl.list
 
     local remainder = {}
  
-    -- second: sorted
     local delete = false
     local newindex = {}
     for j=1,#index do
@@ -95,12 +139,29 @@ function P:truncate(v)
                 bl[low_bi]   = nil
             else
                 local old_list = list[low_bn]
-                list[low_bn] = low_bn + (v - low_bi) - 1
-                push(newindex, index[j])
-                delete = true
-                remainder[low_bn + (v - low_bi)] = old_list
+                local new_low_bn = low_bn + (v - low_bi)
+                list[low_bn] = new_low_bn - 1
+                push(newindex, low_bi)
+                remainder[new_low_bn] = old_list
             end
-        elseif delete or low_bi > v then
+            delete = true
+        elseif e and e >= low_bi and e <= high  then
+            if e == low_bi then
+                list[low_bn] = nil
+                bl[low_bi]   = nil
+            else
+                local old_list = list[low_bn]
+                list[low_bn]   = nil
+                bl[low_bi]     = nil
+                low_bn = low_bn + (e - low_bi) + 1
+                low_bi = e + 1
+                bl[low_bi] = low_bn
+                list[low_bn] = old_list
+                push(newindex, low_bi)
+            end
+            delete = false
+            remainder[low_bn] = low_bn + (e - low_bi)
+        elseif delete then
             remainder[low_bn] = list[low_bn]
             list[low_bn] = nil
             bl[low_bi]   = nil
@@ -147,85 +208,6 @@ function P:match(v)
     return nil
 end
 
-function P:getlast()
-    local bl = rawget(self, '_original')
-    local index = bl.indx
-    if #index == 0 then
-        return nil
-    end
-    
-    local block = nil
-    local list = bl.list
-    local last_startblock = bl[index[#index]]
-    if list[last_startblock] == last_startblock then
-        list[last_startblock] = nil
-        bl[index[#index]]   = nil
-        pop(index)
-        block = last_startblock
-    else
-        block = list[last_startblock]
-        list[last_startblock] = list[last_startblock] - 1
-    end
-
-    return block
-end
-
-function pairsByKeys (t, f)
-  local a = {}
-  for n in pairs(t) do 
-        if type(n) == 'number' then
-            push(a, n) 
-        end
-  end
-  sort(a, f)
-  local i = 0      -- iterator variable
-  local iter = function ()   -- iterator function
-    i = i + 1
-    if a[i] == nil then return nil
-    else return a[i], t[a[i]]
-    end
-  end
-  return iter
-end
-
-function P:mergetofreelist(b)
-    local self_a  = rawget(self, '_original')
-    local self_b  = rawget(b,'_original')
-    --print("merge:"..P.tostring(self)..",b:"..P.tostring(b))
-    local list_a  = self_a.list
-    local list_b  = self_b.list
-    for i,v in pairs(list_b) do
-        list_a[i] = v
-    end
-    
-    --print("before cc:"..P.tostring({_original=self}))
-    local newlist = {}
-    local last = nil
-    local last_index = nil
-    for i,v in pairsByKeys(list_a) do
-        --print("i:"..i..",v:"..v..",last:"..tostring(last))
-        if not last then
-            newlist[i] = v
-        else
-            if last + 1 == i then
-                newlist[last_index] = v
-            else
-                newlist[i] = v
-            end
-        end
-        last = v
-        last_index = i
-    end
-    local newself = {}
-    local m = 0
-    for i,v in pairs(newlist) do
-        --print("i:"..i..",r:"..v..",m:"..m)
-        newself[m] = i
-        m = m + (v - i) + 1
-    end
-    return P.new({}, {["map"]=newself, ["list"]=newlist})
-end
-
 function P:insert(i, v)
 
     --print("insert:i:"..i..",v:"..v..":"..P.tostring({_original=self}))
@@ -238,18 +220,22 @@ function P:insert(i, v)
         self[i] = v
         list[v] = v
         push(index, i)
-        return
+        return nil
     end
 
     local list_i = list[self[i]]
 
+    local old_block_nr
+
     if list_i then
+        old_block_nr = self[i]
         if list_i == self[i] then
             -- item exists and is size 1; just update
             --print("hash append")
             list[self[i]] = nil
             self[i] = v
             list[v] = v
+            -- FIXME: implement fast canonicalize here
         else
             -- at the start. NOTE: i+1 will not exist, as size > 1
             --print("start append")
@@ -259,6 +245,7 @@ function P:insert(i, v)
             push(index, n)
             self[i]         = v
             list[v]         = v
+            -- FIXME: implement fast canonicalize here
         end
     else
         local last_index = index[#index]
@@ -269,14 +256,14 @@ function P:insert(i, v)
             -- plain append
             --print("plain append")
             list[last_block] = v
-            return
+            return nil
         elseif i >= next_index then
             -- sparse append: just add
             --print("sparse append")
             self[i] = v
             list[v] = v
             push(index, i)
-            return
+            return nil
 
         else
             --print("middle insert")
@@ -288,6 +275,7 @@ function P:insert(i, v)
                 list_i  = list[self[a]]
                 --print("a:"..a..",i:"..i..",list[a]:"..list_i..",self:"..self[a])
                 if i >= a and i <= a + (list_i - self[a]) then
+                    old_block_nr = self[a] + (i - a)
                     if a + list_i - self[a]  == i then
                         --print("middle insert:at last")
                         -- entirely at the end: just add and shrink
@@ -295,6 +283,7 @@ function P:insert(i, v)
                         list[v] = v
                         list[self[a]] = list_i - 1
                         push(index, i)
+                        -- FIXME: implement fast canonicalize here
                     else
                         --print("middle insert:not at last")
                         -- in the middle
@@ -305,6 +294,7 @@ function P:insert(i, v)
                         self[i+1] = self[a] + (i - a) + 1
                         list[self[i+1]] = list_i
                         push(index, i+1)
+                        -- FIXME: implement fast canonicalize here
                     end
                     break
                 end
@@ -314,7 +304,7 @@ function P:insert(i, v)
 
     P._canonicalize(self)
 
-    return
+    return old_block_nr
 end
 
 function P:_canonicalize()
