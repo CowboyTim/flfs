@@ -997,11 +997,7 @@ truncate = function(self, path, size, ctime)
 
             -- free the blocks to the filesystem's freelist!
             local remainder = list.truncate(m.blockmap, lindx + 1)
-            if m.freelist then
-                addtofreelist(m.freelist:getfreelist())
-            end
             addtofreelist(remainder)
-        
         end
 
         -- update that lindx block, if it existed: can happen when file grows
@@ -1033,21 +1029,28 @@ truncate = function(self, path, size, ctime)
             -- This is because I don't want to have no truncate(): then I would
             -- need _setblock() for all null-ed blocks.
             --
-            self:_setblock(path, size, list:new({[lindx]=new_block_nr}, STRIDE))
+            local nb = list:new{
+                map= {[lindx]=new_block_nr},
+                list={[new_block_nr]=new_block_nr}
+            }
+            self:_setblock(path, size, nb, STRIDE)
         end
     else 
 
         -- free the blocks: just add to the filesystem's freelist
-        if m.freelist then
-            addtofreelist(m.freelist:getfreelist())
-        end
         addtofreelist((rawget(m.blockmap, '_original')).list)
 
-
+        -- start clean: new empty virgin blockmap
+        m.blockmap = list:new()
     end
-    
+
+    -- start with clean freelist too, this will be probably empty anyway
+    if m.freelist then
+        addtofreelist(m.freelist:getfreelist())
+    end
     m.freelist = fl:new()
-    m.blockmap = list:new()
+
+    -- update meta
     m.ctime    = ctime
     m.mtime    = ctime
     m.size     = size
