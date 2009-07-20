@@ -37,7 +37,7 @@ local ENOATTR      = -516
 local ENOTSUPP     = -524
 
 local BLOCKSIZE    = 4096      -- in bytes
-local STRIDE       = 1         -- 128 kb
+local STRIDE       = 1         -- 128 kb (for the moment 1 block 4kb)
 local MAXINT       = 2^32 -1
 
 --
@@ -889,8 +889,8 @@ write = function(self, path, buf, offset, obj)
         local ok, new_block_nr = pcall(getnextfreeblocknr, entity, stride)
         if not ok then
             -- FIXME: doesn't work with coding errors?!
-            obj.errorcode = ENOSPC
             print("new_block_nr:"..new_block_nr)
+            --obj.errorcode = ENOSPC
             return ENOSPC
         end
         

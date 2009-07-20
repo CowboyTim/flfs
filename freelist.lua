@@ -59,7 +59,7 @@ function P:new(blocklist)
 end
 
 function P:newmeta(start_block, size)
-    print("newmeta()"..start_block..",s:"..size)
+    --print("newmeta()"..start_block..",s:"..size)
     local o = {}
     setmetatable(o, self)
     self.__index = self
@@ -86,7 +86,7 @@ function P:add(blocklist)
     end
     local freelist = self.freelist
     for i,b in pairs(blocklist) do
-        print("addtofreelist:i:"..i..",b:"..tostring(b))
+        --print("addtofreelist:i:"..i..",b:"..tostring(b))
         freelist[i] = b
     end
 
@@ -102,6 +102,7 @@ function P:add(blocklist)
 end
 
 function P:getnextstride(stride)
+    --print("getnextstride():stride:"..stride..",current:"..P.tostring(self))
     local freelist = self.freelist
     if not next(freelist) then
         return nil
@@ -116,6 +117,7 @@ function P:getnextstride(stride)
             -- FIXME: implement better search
             for i,v in ipairs(stridesizeindex) do
                 if stride == v then
+                    --print("remove stridesizeindex:"..i..",v:"..v)
                     remove(stridesizeindex, i)
                     break
                 end
@@ -127,7 +129,8 @@ function P:getnextstride(stride)
     -- no exact match found: take a bigger stride and chop it up
     -- FIXME: implement better search
     for i,v in ipairs(stridesizeindex) do
-        if stride <= v then
+        if stride < v then
+            --print("checking size:"..v)
             local s = pop(stridemap[v])
             if #(stridemap[v]) == 0 then
                 stridemap[v] = nil
@@ -136,17 +139,27 @@ function P:getnextstride(stride)
             local e = freelist[s]
             freelist[s] = nil
 
-            -- FIXME: intelligent insert would speed up
-            self:add({[s+1]=e})
+            -- add the remaining freelist
+            local size = e - s
+            if size >= 1 then
+                freelist[s+1] = e
+                if not stridemap[size] then
+                    stridemap[size] = {}
+                end
+                push(stridemap[size],s+1)
+            else
+                remove(stridesizeindex, i)
+            end
             return s
         end
     end
 
+    --print("getnextstride()end:stride:"..stride..",current:"..P.tostring(self))
     return nil
 end
 
 function P:canonicalize_freelist()
-    print("canonicalize_freelist called")
+    --print("canonicalize_freelist called")
     
     local freelist = self.freelist
 
@@ -155,7 +168,7 @@ function P:canonicalize_freelist()
     local stridemap = {}
     local last
     for i,v in pairsByKeys(freelist) do
-        print("i:"..i..",v:"..tostring(v))
+        --print("i:"..i..",v:"..tostring(v))
         if not last then
             last = i
         else
@@ -192,7 +205,7 @@ function P:canonicalize_freelist()
     end
     self.stridemap       = stridemap
     self.stridesizeindex = stridesizeindex
-    print("canonicalize_freelist ended")
+    --print("canonicalize_freelist ended")
 end
 
 local freelist
