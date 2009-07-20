@@ -181,10 +181,12 @@ fs_meta["/"].nlink         = 2
 
 local journal_fh
 
--- divide the journal section into 2. Note that although they have different
+--
+-- Divide the journal section into 2. Note that although they have different
 -- names, they are and will be interchangeable sections: the journal can hold
 -- state, and the state can hold the journal. In fact, they will always hold
 -- both even, we just switch between the two sections.
+--
 local m = floor(block_nr/2)
 journals = {
     current = {freelist={[0] = m - 1},        size=0},
@@ -192,7 +194,13 @@ journals = {
 }
 local journals = journals
 
+--
+-- Finds a next stride of particular size: checks the file's assigned freelist
+-- first, if not, the main freelist, if not available: throws exception.
+-- returns the start block of that stride if successfull
+--
 local function getfreestride(stride_size)
+    print("getfreestride():"..stride_size)
     local next_free_stride = freelist:getnextstride(stride_size)
     if not next_free_stride then 
         -- watermark shift
@@ -203,6 +211,7 @@ local function getfreestride(stride_size)
             error({code=1, message="Disk Full"})
         end
     end
+    print("getfreestride():return:"..next_free_stride)
     return next_free_stride
 end
 
@@ -216,15 +225,24 @@ end
 -- available anymore
 --
 local function getnextfreeblocknr(meta, stride_wanted)
-    if not meta.freelist then
-        meta.freelist = fl:new({})
-    end
-    local nextfreeblock = meta.freelist:getnextstride(1)
-    if not nextfreeblock then
-        local start = getfreestride(stride_wanted)
-        meta.freelist:add({[start]=start+stride_wanted-1})
+    print("getnextfreeblocknr():stride_wanted:"..stride_wanted)
+    local nextfreeblock
+    if meta.freelist then
+        print("getnextfreeblocknr():no meta freelist")
         nextfreeblock = meta.freelist:getnextstride(1)
+        if not nextfreeblock then
+            nextfreeblock = getfreestride(stride_wanted)
+            if stride_wanted > 1 then
+                meta.freelist = fl:newmeta(nextfreeblock+1, stride_wanted-1)
+            end
+        end
+    else
+        nextfreeblock = getfreestride(stride_wanted)
+        if stride_wanted > 1 then
+            meta.freelist = fl:newmeta(nextfreeblock+1, stride_wanted-1)
+        end
     end
+    print("getnextfreeblocknr():return:"..tostring(nextfreeblock))
     return nextfreeblock
 end
 
@@ -239,23 +257,9 @@ local function addtofreelist(blocklist)
     return nil
 end
 
-
 --
--- This method frees a single block. This is typically upon re writing the
--- file: a new block is always requested and the old block needs to be freed,
--- this method serves for freeing that new block. It is currently added to the
--- freelist of the file itself
+-- This method reads data from the block device with a start and an size
 --
-local function freesingleblock(b, meta)
-    if not meta.freelist then
-        meta.freelist = fl:new({[b]=b})
-    else
-        meta.freelist:add({[b]=b})
-    end
-    return
-end
-
-
 local function readdata(start, size)
     print("readdata():"..start..","..size)
     assert(journal_fh:seek('set', start))
@@ -263,7 +267,6 @@ local function readdata(start, size)
     print("readdata|return:"..#a)
     return a
 end
-
 
 --
 -- This method reads a block from the block device (or file)
@@ -885,7 +888,9 @@ write = function(self, path, buf, offset, obj)
         -- find a new block that's free
         local ok, new_block_nr = pcall(getnextfreeblocknr, entity, stride)
         if not ok then
+            -- FIXME: doesn't work with coding errors?!
             obj.errorcode = ENOSPC
+            print("new_block_nr:"..new_block_nr)
             return ENOSPC
         end
         
@@ -983,6 +988,8 @@ truncate = function(self, path, size, ctime)
             -- always write as a new block
             local ok, new_block_nr = pcall(getnextfreeblocknr, m, STRIDE)
             if not ok then
+                -- FIXME: doesn't work with coding errors?!
+                print("new_block_nr:"..new_block_nr)
                 return ENOSPC
             end
 

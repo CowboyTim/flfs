@@ -58,6 +58,24 @@ function P:new(blocklist)
     return o
 end
 
+function P:newmeta(start_block, size)
+    print("newmeta()"..start_block..",s:"..size)
+    local o = {}
+    setmetatable(o, self)
+    self.__index = self
+
+    o.freelist        = {}
+    o.stridemap       = {}
+    o.stridesizeindex = {}
+
+    o.freelist[start_block] = start_block + size - 1
+    o.stridemap[size] = {}
+    push(o.stridemap[size],start_block)
+    push(o.stridesizeindex, size)
+
+    return o
+end
+
 function P:getfreelist()
     return self.freelist
 end
