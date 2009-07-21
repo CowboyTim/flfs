@@ -179,14 +179,16 @@ fs_meta["/"].nlink         = 2
 
 local journal_fh
 
--- divide the journal section into 2. Note that although they have different
+--
+-- Divide the journal section into 2. Note that although they have different
 -- names, they are and will be interchangeable sections: the journal can hold
 -- state, and the state can hold the journal. In fact, they will always hold
 -- both even, we just switch between the two sections.
+--
 local m = floor(block_nr/2)
 journals = {
-    current = {freelist={[0] = m - 1},       size=0},
-    other   = {freelist={[m] = block_nr - 1},size=0}
+    current = {freelist={[0] = m - 1},        size=0},
+    other   = {freelist={[m] = block_nr - 1}, size=0}
 }
 local journals = journals
 
@@ -333,6 +335,8 @@ end
 -- This method writes a block to the block device (or file)
 --
 local function writeblock(path, blocknr, blockdata)
+    print("writeblock():"..path..",nr:"..blocknr)
+
     assert(journal_fh:seek('set', BLOCKSIZE*blocknr))
     assert(journal_fh:write(blockdata))
     assert(journal_fh:flush())
@@ -347,7 +351,7 @@ local function journal_write(...)
         local journal_meta = journals['current']
         local current_js   = journal_meta.size
         local next_bi      = floor((current_js+#journal_entry)/BLOCKSIZE)
-        local jfreelist    = journal_meta.freelist.freelist
+        local jfreelist    = journal_meta.freelist
         local first_free_block = next(jfreelist)
         print("journal_write:current_js:"..current_js..
               ",next_bi:"..next_bi..
@@ -357,7 +361,7 @@ local function journal_write(...)
         -- new journal? clear first block too
         if current_js == 0 then
             journal_fh:seek('set', BLOCKSIZE * first_free_block)
-            journal_fh:write(pad('', BLOCKSIZE, ' '))
+            journal_fh:write(pad('', BLOCKSIZE, '\000'))
             journal_fh:flush()
         end
 
@@ -374,7 +378,7 @@ local function journal_write(...)
                 return journal_write(unpack(arg))
             end
             journal_fh:seek('set', BLOCKSIZE * (first_free_block + next_bi))
-            journal_fh:write(pad('', BLOCKSIZE, ' '), empty_block)
+            journal_fh:write(pad('', BLOCKSIZE, '\000'), empty_block)
             journal_fh:flush()
         end
 
@@ -620,12 +624,12 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
         end
         return nil
     end)
-    if not journal_f then
-        error(err)
-    end
-    local status, err = pcall(journal_f)
-    if not status then
-        print("was error:"..err)
+    if journal_f then
+        local status, err = pcall(journal_f)
+        if not status then
+            print("was error:"..err)
+        end
+    else
         error(err)
     end
     journals['current'].size = journal_size 
@@ -675,21 +679,18 @@ init = function(self, proto_major, proto_minor, async_read, max_write, max_reada
             -- usually need this to adjust the ctime
             arg[#arg+1] = time()
 
-            -- persistency: make the lua function call
-            local o = {}
-            for i,w in ipairs(arg) do
-                if type(arg[i]) == "number" then
-                    o[i] = arg[i]
-                elseif type(arg[i]) == "string" then
-                    o[i] = format("%q", arg[i])
-                end
-            end
-
             -- really call the function, save the return
             local r = fusemethod(self, unpack(arg))
 
+            -- persistency: for the journal
+            for i,w in ipairs(arg) do
+                if type(arg[i]) == "string" then
+                    arg[i] = format("%q", arg[i])
+                end
+            end
+
             -- save it to the journal...
-            local journal_entry = prefix..join(o,",")..")\n"
+            local journal_entry = prefix..join(arg,",")..")\n"
             if not journal_write(journal_entry) then
                 return ENOSPC
             end
