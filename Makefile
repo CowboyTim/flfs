@@ -14,7 +14,7 @@ WARN= #-ansi -pedantic -Wall
 INCS= -I$(LUAINC) -I$(MD5INC)
 LIBS= -lfuse -llua5.1
 
-OBJS = fuse.so
+OBJS = fuse.so fsync.so
 
 CC=gcc
 
